@@ -23,15 +23,6 @@ function normalizeUrl(str) {
     .replace(/\\/g, "");
 }
 
-function uniqBy(arr, keyFn) {
-  const map = new Map();
-  arr.forEach(item => {
-    const key = keyFn(item);
-    if (!map.has(key)) map.set(key, item);
-  });
-  return [...map.values()];
-}
-
 function toNumber(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -41,7 +32,16 @@ function areaOf(item) {
   return toNumber(item.width) * toNumber(item.height);
 }
 
-function safePushMedia(arr, item) {
+function uniqBy(arr, keyFn) {
+  const seen = new Map();
+  arr.forEach(item => {
+    const key = keyFn(item);
+    if (!seen.has(key)) seen.set(key, item);
+  });
+  return [...seen.values()];
+}
+
+function safePush(arr, item) {
   if (!item || !item.url) return;
   const u = normalizeUrl(item.url);
   if (!/^https?:\/\//i.test(u)) return;
@@ -53,200 +53,262 @@ function safePushMedia(arr, item) {
   });
 }
 
-function pickLargest(list) {
-  if (!list || !list.length) return null;
-  const sorted = [...list].sort((a, b) => {
-    const areaDiff = areaOf(b) - areaOf(a);
-    if (areaDiff !== 0) return areaDiff;
+function pickLargest(items) {
+  if (!items || !items.length) return null;
+  return [...items].sort((a, b) => {
+    const diff = areaOf(b) - areaOf(a);
+    if (diff !== 0) return diff;
     return (b.url || "").length - (a.url || "").length;
-  });
-  return sorted[0];
+  })[0];
 }
 
-function groupByBaseUrl(list) {
+function groupByCleanUrl(list) {
   const groups = new Map();
-
   list.forEach(item => {
     const key = (item.url || "").replace(/\?.*$/, "");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   });
-
   return [...groups.values()];
 }
 
-function extractJsonCandidates(html) {
-  const candidates = [];
+function parseJsonObjectFromMarker(html, marker) {
+  const idx = html.indexOf(marker);
+  if (idx === -1) return null;
 
-  // image_versions2 candidates with width/height
-  let m;
-  const imageVersions2Re =
-    /"image_versions2"\s*:\s*\{[\s\S]*?"candidates"\s*:\s*\[([\s\S]*?)\]\s*\}/ig;
-  while ((m = imageVersions2Re.exec(html)) !== null) {
-    candidates.push({ type: "image_versions2", raw: m[1] });
+  let start = html.indexOf("{", idx);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < html.length; i++) {
+    const ch = html[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") depth++;
+    if (ch === "}") depth--;
+
+    if (depth === 0) {
+      return html.slice(start, i + 1);
+    }
   }
 
-  // display_resources array
-  const displayResourcesRe =
-    /"display_resources"\s*:\s*\[([\s\S]*?)\]/ig;
-  while ((m = displayResourcesRe.exec(html)) !== null) {
-    candidates.push({ type: "display_resources", raw: m[1] });
-  }
-
-  // video_versions array
-  const videoVersionsRe =
-    /"video_versions"\s*:\s*\[([\s\S]*?)\]/ig;
-  while ((m = videoVersionsRe.exec(html)) !== null) {
-    candidates.push({ type: "video_versions", raw: m[1] });
-  }
-
-  return candidates;
+  return null;
 }
 
-function parseResourceObjects(raw, type) {
-  const results = [];
-
-  // 匹配 url + width + height
-  const tripleRe =
-    /"url"\s*:\s*"([^"]+)"[\s\S]*?"width"\s*:\s*(\d+)[\s\S]*?"height"\s*:\s*(\d+)/ig;
-  let m;
-  while ((m = tripleRe.exec(raw)) !== null) {
-    safePushMedia(results, {
-      url: m[1],
-      width: m[2],
-      height: m[3],
-      type
-    });
+function tryParseJSON(str) {
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return null;
   }
-
-  // 兼容字段顺序不同
-  const tripleRe2 =
-    /"width"\s*:\s*(\d+)[\s\S]*?"height"\s*:\s*(\d+)[\s\S]*?"url"\s*:\s*"([^"]+)"/ig;
-  while ((m = tripleRe2.exec(raw)) !== null) {
-    safePushMedia(results, {
-      url: m[3],
-      width: m[1],
-      height: m[2],
-      type
-    });
-  }
-
-  return results;
 }
 
-function extractMedia(html) {
+function deepWalk(node, visitor) {
+  if (!node) return;
+  if (Array.isArray(node)) {
+    node.forEach(v => deepWalk(v, visitor));
+    return;
+  }
+  if (typeof node === "object") {
+    visitor(node);
+    Object.keys(node).forEach(k => deepWalk(node[k], visitor));
+  }
+}
+
+function extractFromStructuredJson(html) {
   const images = [];
   const videos = [];
 
-  // 1) og 标签，兜底
-  let m;
-  const ogVideoRe =
-    /<meta[^>]+property=["']og:video["'][^>]+content=["']([^"']+)["'][^>]*>/ig;
-  const ogImageRe =
-    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/ig;
+  const markers = [
+    'window._sharedData',
+    '"xdt_api__v1__media__shortcode__web_info"',
+    '"items"',
+    '"graphql"'
+  ];
 
-  while ((m = ogVideoRe.exec(html)) !== null) {
-    safePushMedia(videos, { url: m[1], type: "video" });
-  }
-  while ((m = ogImageRe.exec(html)) !== null) {
-    safePushMedia(images, { url: m[1], type: "image" });
-  }
+  markers.forEach(marker => {
+    const objStr = parseJsonObjectFromMarker(html, marker);
+    const data = tryParseJSON(objStr);
+    if (!data) return;
 
-  // 2) 抓 structured arrays，优先拿大尺寸
-  const jsonBlocks = extractJsonCandidates(html);
-  jsonBlocks.forEach(block => {
-    const parsed = parseResourceObjects(block.raw, block.type.includes("video") ? "video" : "image");
-    parsed.forEach(item => {
-      if (item.type === "video") safePushMedia(videos, item);
-      else safePushMedia(images, item);
+    deepWalk(data, obj => {
+      if (obj.image_versions2 && Array.isArray(obj.image_versions2.candidates)) {
+        obj.image_versions2.candidates.forEach(c => {
+          safePush(images, {
+            url: c.url,
+            width: c.width,
+            height: c.height,
+            type: "image"
+          });
+        });
+      }
+
+      if (Array.isArray(obj.display_resources)) {
+        obj.display_resources.forEach(c => {
+          safePush(images, {
+            url: c.src || c.url,
+            width: c.config_width || c.width,
+            height: c.config_height || c.height,
+            type: "image"
+          });
+        });
+      }
+
+      if (Array.isArray(obj.video_versions)) {
+        obj.video_versions.forEach(v => {
+          safePush(videos, {
+            url: v.url,
+            width: v.width,
+            height: v.height,
+            type: "video"
+          });
+        });
+      }
+
+      if (obj.video_url) {
+        safePush(videos, {
+          url: obj.video_url,
+          width: obj.width,
+          height: obj.height,
+          type: "video"
+        });
+      }
+
+      if (obj.display_url) {
+        safePush(images, {
+          url: obj.display_url,
+          width: obj.dimensions && obj.dimensions.width,
+          height: obj.dimensions && obj.dimensions.height,
+          type: "image"
+        });
+      }
+
+      if (obj.thumbnail_src) {
+        safePush(images, {
+          url: obj.thumbnail_src,
+          width: obj.dimensions && obj.dimensions.width,
+          height: obj.dimensions && obj.dimensions.height,
+          type: "image"
+        });
+      }
     });
   });
 
-  // 3) 常见字段
-  const directFieldPatterns = [
+  return { images, videos };
+}
+
+function extractByRegex(html) {
+  const images = [];
+  const videos = [];
+  let m;
+
+  const patterns = [
     { re: /"video_url":"(https:[^"]+)"/ig, type: "video" },
     { re: /"display_url":"(https:[^"]+)"/ig, type: "image" },
     { re: /"image_url":"(https:[^"]+)"/ig, type: "image" },
-    { re: /"thumbnail_src":"(https:[^"]+)"/ig, type: "image" }
+    { re: /"thumbnail_src":"(https:[^"]+)"/ig, type: "image" },
+    { re: /<meta[^>]+property=["']og:video["'][^>]+content=["']([^"']+)["'][^>]*>/ig, type: "video" },
+    { re: /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/ig, type: "image" }
   ];
 
-  directFieldPatterns.forEach(item => {
+  patterns.forEach(item => {
     while ((m = item.re.exec(html)) !== null) {
       if (item.type === "video") {
-        safePushMedia(videos, { url: m[1], type: "video" });
+        safePush(videos, { url: m[1], type: "video" });
       } else {
-        safePushMedia(images, { url: m[1], type: "image" });
+        safePush(images, { url: m[1], type: "image" });
       }
     }
   });
 
-  // 4) 通用 url + width + height 抓取
-  const genericTripleRe =
-    /"url"\s*:\s*"([^"]+)"[\s\S]{0,200}?"width"\s*:\s*(\d+)[\s\S]{0,200}?"height"\s*:\s*(\d+)/ig;
-  while ((m = genericTripleRe.exec(html)) !== null) {
+  const tripleRe = /"url"\s*:\s*"([^"]+)"[\s\S]{0,180}?"width"\s*:\s*(\d+)[\s\S]{0,180}?"height"\s*:\s*(\d+)/ig;
+  while ((m = tripleRe.exec(html)) !== null) {
     const u = normalizeUrl(m[1]);
-    if (/\.mp4(\?|$)/i.test(u) || /video/i.test(u)) {
-      safePushMedia(videos, { url: u, width: m[2], height: m[3], type: "video" });
+    if (/\.mp4(\?|$)/i.test(u)) {
+      safePush(videos, { url: u, width: m[2], height: m[3], type: "video" });
     } else {
-      safePushMedia(images, { url: u, width: m[2], height: m[3], type: "image" });
+      safePush(images, { url: u, width: m[2], height: m[3], type: "image" });
     }
   }
 
-  // 5) 纯直链兜底
   const rawVideoUrls = html.match(/https:\\\/\\\/[^"'<>]+\.mp4[^"'<>]*/ig) || [];
   const rawImageUrls = html.match(/https:\\\/\\\/[^"'<>]+\.(?:jpg|jpeg|png|webp)[^"'<>]*/ig) || [];
 
-  rawVideoUrls.forEach(v => safePushMedia(videos, { url: v, type: "video" }));
-  rawImageUrls.forEach(i => safePushMedia(images, { url: i, type: "image" }));
+  rawVideoUrls.forEach(v => safePush(videos, { url: v, type: "video" }));
+  rawImageUrls.forEach(i => safePush(images, { url: i, type: "image" }));
 
-  // 去重
-  const uniqImages = uniqBy(images, x => x.url);
-  const uniqVideos = uniqBy(videos, x => x.url);
-
-  // 同一资源多版本时，保留最大
-  const groupedImages = groupByBaseUrl(uniqImages).map(group => pickLargest(group)).filter(Boolean);
-  const groupedVideos = groupByBaseUrl(uniqVideos).map(group => pickLargest(group)).filter(Boolean);
-
-  // 再按面积排序，最大的排前面
-  groupedImages.sort((a, b) => areaOf(b) - areaOf(a));
-  groupedVideos.sort((a, b) => areaOf(b) - areaOf(a));
-
-  return {
-    images: groupedImages,
-    videos: groupedVideos
-  };
+  return { images, videos };
 }
 
-function sizeLabel(item) {
-  if (item.width && item.height) {
-    return ` (${item.width}×${item.height})`;
-  }
+function extractMedia(html) {
+  const a = extractFromStructuredJson(html);
+  const b = extractByRegex(html);
+
+  const images = uniqBy([...a.images, ...b.images], x => x.url);
+  const videos = uniqBy([...a.videos, ...b.videos], x => x.url);
+
+  const finalImages = groupByCleanUrl(images)
+    .map(group => pickLargest(group))
+    .filter(Boolean)
+    .sort((x, y) => areaOf(y) - areaOf(x));
+
+  const finalVideos = groupByCleanUrl(videos)
+    .map(group => pickLargest(group))
+    .filter(Boolean)
+    .sort((x, y) => areaOf(y) - areaOf(x));
+
+  return { images: finalImages, videos: finalVideos };
+}
+
+function label(item) {
+  if (item.width && item.height) return ` (${item.width}×${item.height})`;
   return "";
 }
 
 function buildButtons(media) {
   const btns = [];
 
-  // 视频一般直接给最大版本
-  media.videos.forEach((v, idx) => {
+  media.videos.forEach((v, i) => {
     btns.push(`
       <a class="igdl-btn igdl-video" href="${v.url}" target="_blank" rel="noopener">
-        最大视频 ${idx + 1}${sizeLabel(v)}
+        下载视频 ${i + 1}${label(v)}
       </a>
     `);
   });
 
-  // 图片按尺寸从大到小列出
-  media.images.forEach((i, idx) => {
+  media.images.forEach((img, i) => {
     btns.push(`
-      <a class="igdl-btn igdl-image" href="${i.url}" target="_blank" rel="noopener">
-        最大图片 ${idx + 1}${sizeLabel(i)}
+      <a class="igdl-btn igdl-image" href="${img.url}" target="_blank" rel="noopener">
+        下载图片 ${i + 1}${label(img)}
       </a>
     `);
   });
 
   if (!btns.length) {
-    btns.push(`<div class="igdl-empty">没抓到最大资源，可能需要登录，或者 Instagram 页面结构又改了。</div>`);
+    btns.push(`
+      <div class="igdl-empty">
+        这条链接没抓到公开资源。通常是这条内容被 Instagram 登录墙拦住了，或者页面结构变了。
+      </div>
+    `);
   }
 
   return btns.join("");
@@ -273,13 +335,13 @@ const injectHtml = `
   color:#fff;
   font-size:14px;
   font-weight:700;
-  margin-bottom:10px;
+  margin-bottom:8px;
 }
 #igdl-sub{
   color:rgba(255,255,255,.82);
   font-size:12px;
-  margin-bottom:10px;
   line-height:1.4;
+  margin-bottom:10px;
 }
 #igdl-list{
   display:flex;
@@ -316,8 +378,8 @@ const injectHtml = `
 
 <div id="igdl-wrap">
   <div id="igdl-close" onclick="document.getElementById('igdl-wrap').remove()">×</div>
-  <div id="igdl-title">Instagram 最大尺寸下载</div>
-  <div id="igdl-sub">已优先按分辨率从大到小筛选</div>
+  <div id="igdl-title">Instagram 免登录优先下载</div>
+  <div id="igdl-sub">优先尝试从公开源码提取资源，抓不到说明该页面公开数据没放出来</div>
   <div id="igdl-list">
     ${buildButtons(media)}
   </div>
