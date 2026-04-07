@@ -3,6 +3,7 @@
  * - 外部传入 IPQS / AbuseIPDB Key
  * - 真人概率文字化
  * - 真人概率参与综合评分
+ * - 商业VPN / 代理出口 / 高风险代理
  * - Netflix / TikTok / YouTube 检测
  *************************************/
 
@@ -247,28 +248,37 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   let level = "优秀";
   const tags = [];
 
-  let anonymousVPN = false;
-  let datacenterProxy = false;
-  let publicProxy = false;
-  let suspiciousProxy = false;
+  let commercialVPN = false;
+  let proxyExit = false;
+  let highRiskProxy = false;
   let blacklisted = false;
   let abuseNode = false;
   let torNode = false;
   let attackInvolved = false;
   let cloudService = false;
+  let datacenterProxy = false;
 
   if (ipqs) {
-    anonymousVPN = ipqs.vpn === true;
-    datacenterProxy = ipqs.hosting === true;
-    publicProxy = ipqs.proxy === true;
-    suspiciousProxy =
+    commercialVPN =
+      ipqs.vpn === true ||
+      ipqs.active_vpn === true;
+
+    proxyExit =
+      ipqs.proxy === true ||
+      ipqs.hosting === true;
+
+    highRiskProxy =
       ipqs.proxy === true ||
       ipqs.vpn === true ||
-      ipqs.tor === true ||
       ipqs.active_vpn === true ||
-      ipqs.active_tor === true;
+      ipqs.tor === true ||
+      ipqs.active_tor === true ||
+      ipqs.recent_abuse === true;
+
     torNode = ipqs.tor === true || ipqs.active_tor === true;
     cloudService = ipqs.hosting === true;
+    datacenterProxy = ipqs.hosting === true;
+
     blacklisted = ipqs.recent_abuse === true || ipqs.bot_status === true;
     abuseNode = ipqs.recent_abuse === true;
     attackInvolved = ipqs.bot_status === true;
@@ -278,7 +288,7 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     }
 
     if (datacenterProxy && networkCategory === "未知") networkCategory = "机房";
-    if (!datacenterProxy && !publicProxy && !anonymousVPN && networkCategory === "未知") {
+    if (!datacenterProxy && !proxyExit && !commercialVPN && networkCategory === "未知") {
       networkCategory = "住宅";
     }
 
@@ -288,18 +298,23 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
 
     tags.push("IPQS");
   } else {
+    commercialVPN = false;
+
     if (ipApi.proxy) {
-      suspiciousProxy = true;
-      publicProxy = true;
+      proxyExit = true;
+      highRiskProxy = true;
       score -= 20;
       tags.push("代理");
     }
+
     if (ipApi.hosting) {
       datacenterProxy = true;
       cloudService = true;
+      proxyExit = true;
       score -= 25;
       tags.push("机房");
     }
+
     if (networkCategory === "住宅") {
       score += 8;
       tags.push("住宅特征");
@@ -317,6 +332,7 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     if (abuseScore > 0) {
       blacklisted = true;
       abuseNode = true;
+      highRiskProxy = true;
     }
     if (abuseScore >= 50 || totalReports >= 10) {
       attackInvolved = true;
@@ -357,15 +373,15 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     level: level,
     tags: tags.length ? tags.join(" / ") : "无明显异常",
     networkCategory: networkCategory,
-    anonymousVPN: anonymousVPN,
-    datacenterProxy: datacenterProxy,
-    publicProxy: publicProxy,
-    suspiciousProxy: suspiciousProxy,
+    commercialVPN: commercialVPN,
+    proxyExit: proxyExit,
+    highRiskProxy: highRiskProxy,
     blacklisted: blacklisted,
     abuseNode: abuseNode,
     torNode: torNode,
     attackInvolved: attackInvolved,
-    cloudService: cloudService
+    cloudService: cloudService,
+    datacenterProxy: datacenterProxy
   };
 }
 
@@ -430,10 +446,9 @@ function fetchAll() {
               lines.push("");
 
               lines.push("【代理检测】");
-              lines.push(boolLine("匿名VPN", risk.anonymousVPN));
-              lines.push(boolLine("机房代理", risk.datacenterProxy));
-              lines.push(boolLine("公共代理", risk.publicProxy));
-              lines.push(boolLine("可疑代理", risk.suspiciousProxy));
+              lines.push(boolLine("商业VPN", risk.commercialVPN));
+              lines.push(boolLine("代理出口", risk.proxyExit));
+              lines.push(boolLine("高风险代理", risk.highRiskProxy));
               lines.push(boolLine("TOR节点", risk.torNode));
               lines.push(boolLine("云服务", risk.cloudService));
               lines.push("");
