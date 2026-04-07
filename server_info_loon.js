@@ -1,8 +1,8 @@
 /*************************************
  * 节点详情查询 Ultimate - Loon
- * - 外部传入 IPQS / AbuseIPDB Key
+ * - 强制走当前长按节点
  * - 真人概率文字化
- * - 真人概率参与综合评分
+ * - 多源评分
  * - 商业VPN / 代理出口 / 高风险代理
  * - Netflix / TikTok / YouTube 检测
  *************************************/
@@ -45,12 +45,31 @@ function getNodeName() {
   return "当前节点";
 }
 
+function getNodeParam() {
+  try {
+    if (typeof $environment !== "undefined" && $environment.params) {
+      if (typeof $environment.params === "string") return $environment.params;
+      if ($environment.params.node) return $environment.params.node;
+      if ($environment.params.nodeInfo && $environment.params.nodeInfo.name) {
+        return $environment.params.nodeInfo.name;
+      }
+    }
+    if (typeof $loon !== "undefined" && $loon.node) {
+      return $loon.node;
+    }
+  } catch (e) {}
+  return null;
+}
+
 const NODE_NAME = getNodeName();
+const NODE_PARAM = getNodeParam();
 
 /*************** 工具 ***************/
 function httpGet(target, callback) {
   const opts = typeof target === "string" ? { url: target } : target;
   if (!opts.timeout) opts.timeout = TIMEOUT;
+  if (NODE_PARAM) opts.node = NODE_PARAM;
+
   $httpClient.get(opts, function (error, response, data) {
     callback(error, response, data);
   });
@@ -109,17 +128,25 @@ function runChecks(checks, callback) {
 }
 
 /*************** 真人概率显示 ***************/
-function formatHumanScore(score) {
+function formatHumanScoreText(score) {
   const n = Number(score);
   if (isNaN(n)) return "-";
-
-  if (n >= 80) return "🟢 " + n + "（很像真人）";
-  if (n >= 60) return "🟡 " + n + "（正常偏好）";
-  if (n >= 40) return "🟠 " + n + "（可疑，有点像代理）";
-  return "🔴 " + n + "（很像代理/机房）";
+  if (n >= 80) return "很像真人";
+  if (n >= 60) return "正常偏好";
+  if (n >= 40) return "可疑（有点像代理）";
+  return "很像代理/机房";
 }
 
-/*************** API ***************/
+function getHumanScoreLevel(score) {
+  const n = Number(score);
+  if (isNaN(n)) return "warn";
+  if (n >= 80) return "ok";
+  if (n >= 60) return "warn";
+  if (n >= 40) return "warn";
+  return "fail";
+}
+
+/*************** 外部 API ***************/
 function checkIPQS(ip, cb) {
   if (!IPQS_KEY) return cb(null);
 
@@ -133,14 +160,11 @@ function checkIPQS(ip, cb) {
   httpGet(
     {
       url: url,
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
+      headers: { "User-Agent": "Mozilla/5.0" }
     },
     function (err, resp, data) {
       if (err || !data) return cb(null);
-      const json = parseJSON(data);
-      cb(json || null);
+      cb(parseJSON(data) || null);
     }
   );
 }
@@ -164,8 +188,7 @@ function checkAbuseIPDB(ip, cb) {
     },
     function (err, resp, data) {
       if (err || !data) return cb(null);
-      const json = parseJSON(data);
-      cb(json || null);
+      cb(parseJSON(data) || null);
     }
   );
 }
@@ -229,6 +252,42 @@ function checkYouTube(cb) {
   );
 }
 
+/*************** 多源评分文案 ***************/
+function formatIPQSScore(ipqs) {
+  if (!ipqs || typeof ipqs.fraud_score === "undefined") {
+    return { text: "未启用", level: "warn" };
+  }
+  const s = Number(ipqs.fraud_score);
+  if (s < 25) return { text: "低风险（" + s + "）", level: "ok" };
+  if (s < 50) return { text: "一般风险（" + s + "）", level: "warn" };
+  return { text: "高风险（" + s + "）", level: "fail" };
+}
+
+function formatAbuseScore(abuse) {
+  if (!abuse || !abuse.data) {
+    return { text: "未启用", level: "warn" };
+  }
+  const s = Number(abuse.data.abuseConfidenceScore || 0);
+  if (s === 0) return { text: "低风险（" + s + "）", level: "ok" };
+  if (s < 50) return { text: "一般风险（" + s + "）", level: "warn" };
+  return { text: "高风险（" + s + "）", level: "fail" };
+}
+
+function formatIpApiRisk(ipApi) {
+  if (!ipApi) return { text: "未知", level: "warn" };
+  if (ipApi.hosting) return { text: "机房/服务器", level: "fail" };
+  if (ipApi.proxy) return { text: "代理", level: "warn" };
+  return { text: "普通网络", level: "ok" };
+}
+
+function formatCz88Risk(cz88) {
+  const t = (cz88 && cz88.netWorkType) ? String(cz88.netWorkType) : "";
+  if (!t) return { text: "-", level: "warn" };
+  if (t.indexOf("机房") !== -1) return { text: t, level: "fail" };
+  if (t.indexOf("移动") !== -1) return { text: t, level: "warn" };
+  return { text: t, level: "ok" };
+}
+
 /*************** 风险分析 ***************/
 function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   const rawNetwork = ((cz88 && cz88.netWorkType) || "").toLowerCase();
@@ -245,7 +304,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   }
 
   let score = 100;
-  let level = "优秀";
   const tags = [];
 
   let commercialVPN = false;
@@ -256,16 +314,11 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   let torNode = false;
   let attackInvolved = false;
   let cloudService = false;
-  let datacenterProxy = false;
 
   if (ipqs) {
-    commercialVPN =
-      ipqs.vpn === true ||
-      ipqs.active_vpn === true;
+    commercialVPN = ipqs.vpn === true || ipqs.active_vpn === true;
 
-    proxyExit =
-      ipqs.proxy === true ||
-      ipqs.hosting === true;
+    proxyExit = ipqs.proxy === true || ipqs.hosting === true;
 
     highRiskProxy =
       ipqs.proxy === true ||
@@ -277,7 +330,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
 
     torNode = ipqs.tor === true || ipqs.active_tor === true;
     cloudService = ipqs.hosting === true;
-    datacenterProxy = ipqs.hosting === true;
 
     blacklisted = ipqs.recent_abuse === true || ipqs.bot_status === true;
     abuseNode = ipqs.recent_abuse === true;
@@ -287,8 +339,8 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
       score = Math.max(0, 100 - ipqs.fraud_score);
     }
 
-    if (datacenterProxy && networkCategory === "未知") networkCategory = "机房";
-    if (!datacenterProxy && !proxyExit && !commercialVPN && networkCategory === "未知") {
+    if (ipqs.hosting && networkCategory === "未知") networkCategory = "机房";
+    if (!ipqs.hosting && !proxyExit && !commercialVPN && networkCategory === "未知") {
       networkCategory = "住宅";
     }
 
@@ -298,8 +350,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
 
     tags.push("IPQS");
   } else {
-    commercialVPN = false;
-
     if (ipApi.proxy) {
       proxyExit = true;
       highRiskProxy = true;
@@ -308,7 +358,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     }
 
     if (ipApi.hosting) {
-      datacenterProxy = true;
       cloudService = true;
       proxyExit = true;
       score -= 25;
@@ -346,7 +395,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     tags.push("AbuseIPDB");
   }
 
-  // 真人概率参与综合评分
   const humanScore = Number(cz88 && cz88.score);
   if (!isNaN(humanScore)) {
     if (humanScore >= 80) {
@@ -363,6 +411,7 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   if (score > 100) score = 100;
   if (score < 0) score = 0;
 
+  let level = "优秀";
   if (score >= 85) level = "优秀";
   else if (score >= 70) level = "良好";
   else if (score >= 50) level = "一般";
@@ -380,8 +429,7 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     abuseNode: abuseNode,
     torNode: torNode,
     attackInvolved: attackInvolved,
-    cloudService: cloudService,
-    datacenterProxy: datacenterProxy
+    cloudService: cloudService
   };
 }
 
@@ -409,6 +457,11 @@ function fetchAll() {
           checkAbuseIPDB(ipApi.query, function (abuseData) {
             const risk = analyzeRisk(ipApi, cz88Data || {}, ipqsData, abuseData);
 
+            const ipqsScore = formatIPQSScore(ipqsData);
+            const abuseScore = formatAbuseScore(abuseData);
+            const ipapiScore = formatIpApiRisk(ipApi);
+            const cz88Score = formatCz88Risk(cz88Data);
+
             const checks = [
               { name: "Netflix", run: checkNetflix },
               { name: "TikTok", run: checkTikTok },
@@ -428,7 +481,7 @@ function fetchAll() {
               lines.push("组织：" + (ipApi.org || "-"));
               lines.push("ASN：" + (ipApi.as || "-"));
               lines.push("网络类型：" + (risk.networkCategory || "-"));
-              lines.push("真人概率：" + formatHumanScore(cz88Data && cz88Data.score));
+              lines.push("真人概率：" + formatHumanScoreText(cz88Data && cz88Data.score));
               lines.push("时区：" + (ipApi.timezone || "-"));
               lines.push("");
 
@@ -436,13 +489,13 @@ function fetchAll() {
               lines.push("综合评分：" + risk.score + " / 100");
               lines.push("质量判断：" + risk.level);
               lines.push("特征：" + risk.tags);
-              lines.push("真人修正：" + formatHumanScore(cz88Data && cz88Data.score));
-              if (ipqsData && typeof ipqsData.fraud_score !== "undefined") {
-                lines.push("IPQS风险分：" + ipqsData.fraud_score);
-              }
-              if (abuseData && abuseData.data) {
-                lines.push("Abuse置信分：" + (abuseData.data.abuseConfidenceScore || 0));
-              }
+              lines.push("");
+
+              lines.push("【多源评分】");
+              lines.push(line("IPQS", ipqsScore.text, ipqsScore.level));
+              lines.push(line("AbuseIPDB", abuseScore.text, abuseScore.level));
+              lines.push(line("ip-api", ipapiScore.text, ipapiScore.level));
+              lines.push(line("cz88", cz88Score.text, cz88Score.level));
               lines.push("");
 
               lines.push("【代理检测】");
