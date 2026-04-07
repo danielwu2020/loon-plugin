@@ -1,6 +1,8 @@
 #!name=节点详情查询 Pro
-#!desc=IP质量 / 黑名单 / 真人概率 / 多源评分 / 媒体检测
+#!desc=IP质量 / 黑名单 / 真人概率 / 住宅机房 / Netflix TikTok YouTube
 #!author=danielwu2020
+#!input=IPQS_KEY
+#!input=ABUSEIPDB_KEY
 
 [Script]
-generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询 Pro, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, argument="ipqs={{{IPQS_KEY}}}&abuse={{{ABUSEIPDB_KEY}}}", tag=节点详情查询 Pro, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
