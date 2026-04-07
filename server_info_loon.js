@@ -1,9 +1,9 @@
 /*************************************
  * 节点详情查询 Ultimate - Loon
- * - 仿 ipjiance 风格标签
+ * 参考 ping0.cc 风格：
  * - IP质量
- * - 媒体检测
- * - GPT / AI检测
+ * - 代理/黑名单倾向
+ * - 媒体仅保留 Netflix / TikTok / YouTube
  *************************************/
 
 const TIMEOUT = 8000;
@@ -56,9 +56,9 @@ function parseJSON(str) {
 }
 
 function icon(level) {
-  if (level === "ok") return "✅";
-  if (level === "warn") return "⚠️";
-  return "❌";
+  if (level === "ok") return "🟢";
+  if (level === "warn") return "🟡";
+  return "🔴";
 }
 
 function line(name, value, level) {
@@ -66,7 +66,7 @@ function line(name, value, level) {
 }
 
 function boolLine(name, boolValue) {
-  return (boolValue ? "⚠️ " : "✅ ") + name + "：" + (boolValue ? "是" : "否");
+  return (boolValue ? "🔴 " : "🟢 ") + name + "：" + (boolValue ? "是" : "否");
 }
 
 function done(msg) {
@@ -100,7 +100,7 @@ function runChecks(checks, callback) {
 }
 
 /**********************
- * 媒体 / AI 检测
+ * 媒体检测：只保留 3 项
  **********************/
 
 function checkNetflix(cb) {
@@ -113,60 +113,6 @@ function checkNetflix(cb) {
     if (code === 200) return cb("可用", "ok");
     if (code === 404) return cb("仅自制剧", "warn");
     if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkDisney(cb) {
-  httpGet({
-    url: "https://www.disneyplus.com",
-    headers: { "User-Agent": "Mozilla/5.0" }
-  }, function (err, resp, data) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 200 && /disney/i.test(data || "")) return cb("可访问", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkYouTubePremium(cb) {
-  httpGet({
-    url: "https://www.youtube.com/premium",
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Accept-Language": "en"
-    }
-  }, function (err, resp, data) {
-    if (err || !resp || !data) return cb("检测失败", "fail");
-    const match = data.match(/"countryCode":"(.*?)"/);
-    if (match && match[1]) return cb(match[1], "ok");
-    cb("未知", "warn");
-  });
-}
-
-function checkPrimeVideo(cb) {
-  httpGet({
-    url: "https://www.primevideo.com",
-    headers: { "User-Agent": "Mozilla/5.0" }
-  }, function (err, resp) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 200) return cb("可访问", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkSpotify(cb) {
-  httpGet({
-    url: "https://spclient.wg.spotify.com/signup/public/v1/account?validate=1&email=test%40gmail.com",
-    headers: { "User-Agent": "Mozilla/5.0" }
-  }, function (err, resp) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 200 || code === 202 || code === 204) return cb("可注册/可访问", "ok");
-    if (code === 403) return cb("受限", "fail");
     cb("未知(" + code + ")", "warn");
   });
 }
@@ -189,57 +135,19 @@ function checkTikTok(cb) {
   });
 }
 
-function checkChatGPT(cb) {
+function checkYouTube(cb) {
   httpGet({
-    url: "https://chatgpt.com/",
-    headers: { "User-Agent": "Mozilla/5.0" }
-  }, function (err, resp, data) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 200 && /html|openai|chatgpt/i.test(data || "")) return cb("可访问", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkOpenAIAPI(cb) {
-  httpGet({
-    url: "https://api.openai.com/v1/models",
+    url: "https://www.youtube.com/premium",
     headers: {
       "User-Agent": "Mozilla/5.0",
-      "Authorization": "Bearer sk-test"
+      "Accept-Language": "en"
     }
-  }, function (err, resp) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 401 || code === 200) return cb("可连接", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkClaude(cb) {
-  httpGet({
-    url: "https://claude.ai/",
-    headers: { "User-Agent": "Mozilla/5.0" }
   }, function (err, resp, data) {
-    if (err || !resp) return cb("检测失败", "fail");
+    if (err || !resp || !data) return cb("检测失败", "fail");
+    const match = data.match(/"countryCode":"(.*?)"/);
+    if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
     const code = resp.status || resp.statusCode || 0;
-    if (code === 200 && /html|claude|anthropic/i.test(data || "")) return cb("可访问", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
-    cb("未知(" + code + ")", "warn");
-  });
-}
-
-function checkGemini(cb) {
-  httpGet({
-    url: "https://gemini.google.com/",
-    headers: { "User-Agent": "Mozilla/5.0" }
-  }, function (err, resp, data) {
-    if (err || !resp) return cb("检测失败", "fail");
-    const code = resp.status || resp.statusCode || 0;
-    if (code === 200 && /html|gemini|google/i.test(data || "")) return cb("可访问", "ok");
-    if (code === 403) return cb("被拒绝", "fail");
+    if (code === 200) return cb("可访问", "warn");
     cb("未知(" + code + ")", "warn");
   });
 }
@@ -270,13 +178,8 @@ function analyzeRisk(ipApi, cz88) {
     "proxy", "public proxy", "open proxy", "socks", "http proxy", "reseller"
   ];
 
-  const torKeywords = [
-    "tor", "onion"
-  ];
-
-  const abuseKeywords = [
-    "abuse", "spam", "bot", "crawler", "scanner", "malware"
-  ];
+  const torKeywords = ["tor", "onion"];
+  const abuseKeywords = ["abuse", "spam", "bot", "crawler", "scanner", "malware"];
 
   function hasAny(arr) {
     for (var i = 0; i < arr.length; i++) {
@@ -369,15 +272,8 @@ function fetchAll() {
 
         const checks = [
           { name: "Netflix", run: checkNetflix },
-          { name: "Disney+", run: checkDisney },
-          { name: "YouTube Premium", run: checkYouTubePremium },
-          { name: "Prime Video", run: checkPrimeVideo },
-          { name: "Spotify", run: checkSpotify },
           { name: "TikTok", run: checkTikTok },
-          { name: "ChatGPT", run: checkChatGPT },
-          { name: "OpenAI API", run: checkOpenAIAPI },
-          { name: "Claude", run: checkClaude },
-          { name: "Gemini", run: checkGemini }
+          { name: "YouTube", run: checkYouTube }
         ];
 
         runChecks(checks, function (results) {
@@ -395,7 +291,6 @@ function fetchAll() {
           lines.push("网络类型：" + ((cz88Data && cz88Data.netWorkType) || "-"));
           lines.push("真人概率：" + ((cz88Data && cz88Data.score) || "-"));
           lines.push("时区：" + (ipApi.timezone || "-"));
-          lines.push("经纬度：" + (ipApi.lon || "-") + " / " + (ipApi.lat || "-"));
           lines.push("");
 
           lines.push("【IP质量】");
@@ -419,7 +314,7 @@ function fetchAll() {
           lines.push(boolLine("参与攻击", risk.attackInvolved));
           lines.push("");
 
-          lines.push("【媒体 / AI 检测】");
+          lines.push("【媒体检测】");
           for (var i = 0; i < results.length; i++) {
             lines.push(line(results[i].name, results[i].value, results[i].level));
           }
