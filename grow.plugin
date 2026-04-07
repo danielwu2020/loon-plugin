@@ -1,0 +1,17 @@
+#!name=Grow破解
+#!desc=Grow Forever VIP Crack (适配 2.3.6)
+#!openUrl=
+#!author=yqc007 (适配 by Grok)
+#!homepage=https://github.com/Moli-X/Resources/raw/main/Loon/Grow.plugin
+#!icon=https://github.com/Moli-X/Resources/raw/main/Icon/Image/Grow.png
+#!edit=https://github.com/Moli-X/Resources/edit/main/Loon/Grow.plugin
+
+# 原脚本来自 yqc007 的 QuantumultX GrowForeverVipCrack.js
+# 支持版本：最高支持到 Grow 2.3.6（一次性解锁，成功后可更新至商店最新版）
+
+[Script]
+# Grow Unlock Permanent VIP
+http-response ^https?:\/\/api\.revenuecat\.com\/v1\/(receipts|subscribers\/\$RCAnonymousID%3A\w{32})$ script-path=https://raw.githubusercontent.com/yqc007/QuantumultX/master/GrowForeverVipCrack.js, requires-body=true, timeout=60, tag=GrowForeverVipCrack_123
+
+[MITM]
+hostname = api.revenuecat.com
