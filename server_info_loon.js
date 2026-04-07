@@ -1,9 +1,22 @@
 /*************************************
- * 节点详情查询 Ultimate（无IPQS纯净版）
+ * 节点详情查询 Ultimate（完整详细版 / 无IPQS）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
+ * 功能：
+ * - 强制走当前长按节点
+ * - 基础信息
+ * - 网络画像
+ * - 家宽 / 数据中心 / 移动网络
+ * - 真人概率中文化
+ * - 综合评分
+ * - 风控值 / 原生感 / 共享感
+ * - 多源评分
+ * - 代理 / 风险判断
+ * - 黑名单 / 滥用
+ * - Netflix / TikTok / YouTube 检测
+ * - 最终结论
  *************************************/
 
 const TIMEOUT = 15000;
@@ -89,7 +102,7 @@ function getNodeParam() {
 const NODE_NAME = getNodeName();
 const NODE_PARAM = getNodeParam();
 
-/*************** 工具 ***************/
+/*************** 基础工具 ***************/
 function httpGet(target, callback) {
   const opts = typeof target === "string" ? { url: target } : target;
   if (!opts.timeout) opts.timeout = TIMEOUT;
@@ -252,7 +265,7 @@ function checkYouTube(cb) {
   );
 }
 
-/*************** 多源评分文案 ***************/
+/*************** 多源文案 ***************/
 function formatAbuseScore(abuse) {
   if (!ABUSEIPDB_KEY) return { text: "未启用", level: "warn" };
   if (!abuse || !abuse.data) return { text: "请求失败", level: "fail" };
@@ -282,26 +295,58 @@ function formatCz88Risk(cz88) {
   return { text: t, level: "ok" };
 }
 
-/*************** 风险分析 ***************/
+/*************** 风控值 / 原生感 / 共享感 ***************/
+function formatRiskValue(value) {
+  const n = Number(value);
+  if (isNaN(n)) return { text: "-", level: "warn" };
+  if (n <= 20) return { text: n + "（低）", level: "ok" };
+  if (n <= 40) return { text: n + "（偏低）", level: "ok" };
+  if (n <= 60) return { text: n + "（中）", level: "warn" };
+  if (n <= 80) return { text: n + "（偏高）", level: "fail" };
+  return { text: n + "（高）", level: "fail" };
+}
+
+function formatNativeFeel(score) {
+  const n = Number(score);
+  if (isNaN(n)) return { text: "-", level: "warn" };
+  if (n >= 80) return { text: n + "（高原生）", level: "ok" };
+  if (n >= 55) return { text: n + "（一般原生）", level: "warn" };
+  return { text: n + "（低原生）", level: "fail" };
+}
+
+function formatSharedFeel(score) {
+  const n = Number(score);
+  if (isNaN(n)) return { text: "-", level: "warn" };
+  if (n <= 25) return { text: n + "（低共享）", level: "ok" };
+  if (n <= 60) return { text: n + "（中共享）", level: "warn" };
+  return { text: n + "（高共享）", level: "fail" };
+}
+
+/*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
   const rawLower = rawNetwork.toLowerCase();
   const humanScore = Number(cz88 && cz88.score);
 
-  let networkCategory = "普通网络";
-  if (
+  const isResidential =
     rawLower.indexOf("住宅") !== -1 ||
     rawLower.indexOf("家庭") !== -1 ||
-    rawLower.indexOf("宽带") !== -1
-  ) {
-    networkCategory = "住宅";
-  } else if (rawLower.indexOf("移动") !== -1) {
-    networkCategory = "移动数据";
-  } else if (
+    rawLower.indexOf("宽带") !== -1;
+
+  const isDatacenter =
     rawLower.indexOf("机房") !== -1 ||
     rawLower.indexOf("数据中心") !== -1 ||
-    ipApi.hosting === true
-  ) {
+    ipApi.hosting === true;
+
+  const isMobile =
+    rawLower.indexOf("移动") !== -1;
+
+  let networkCategory = "普通网络";
+  if (isResidential) {
+    networkCategory = "住宅";
+  } else if (isMobile) {
+    networkCategory = "移动数据";
+  } else if (isDatacenter) {
     networkCategory = "机房";
   }
 
@@ -380,6 +425,83 @@ function analyzeRisk(ipApi, cz88, abuse) {
     else if (abuseScore > 0) score -= 5;
   }
 
+  /***** 风控值 / 原生感 / 共享感（推断版） *****/
+  let riskValue = 0;
+  let nativeFeel = 50;
+  let sharedFeel = 20;
+
+  // 风控值：越高越危险
+  if (ipApi.proxy === true) riskValue += 25;
+  if (ipApi.hosting === true) riskValue += 25;
+  if (isDatacenter) riskValue += 15;
+  if (isMobile) riskValue += 5;
+
+  if (!isNaN(humanScore)) {
+    if (humanScore >= 80) riskValue -= 10;
+    else if (humanScore >= 60) riskValue -= 3;
+    else if (humanScore >= 40) riskValue += 8;
+    else riskValue += 18;
+  }
+
+  if (abuse && abuse.data) {
+    const abuseScore2 = Number(abuse.data.abuseConfidenceScore || 0);
+    const totalReports2 = Number(abuse.data.totalReports || 0);
+
+    riskValue += Math.min(30, Math.round(abuseScore2 * 0.3));
+    if (totalReports2 >= 10) riskValue += 10;
+    else if (totalReports2 > 0) riskValue += 4;
+  }
+
+  if (riskValue < 0) riskValue = 0;
+  if (riskValue > 100) riskValue = 100;
+
+  // 原生感：越高越像真实当地用户
+  if (isResidential) nativeFeel += 28;
+  if (isMobile) nativeFeel += 12;
+  if (isDatacenter) nativeFeel -= 30;
+  if (ipApi.hosting === true) nativeFeel -= 25;
+  if (ipApi.proxy === true) nativeFeel -= 20;
+
+  if (!isNaN(humanScore)) {
+    if (humanScore >= 80) nativeFeel += 18;
+    else if (humanScore >= 60) nativeFeel += 8;
+    else if (humanScore >= 40) nativeFeel -= 8;
+    else nativeFeel -= 20;
+  }
+
+  if (abuse && abuse.data) {
+    const abuseScore3 = Number(abuse.data.abuseConfidenceScore || 0);
+    nativeFeel -= Math.min(15, Math.round(abuseScore3 * 0.15));
+  }
+
+  if (nativeFeel < 0) nativeFeel = 0;
+  if (nativeFeel > 100) nativeFeel = 100;
+
+  // 共享感：越高越像多人共用出口
+  if (ipApi.hosting === true) sharedFeel += 30;
+  if (ipApi.proxy === true) sharedFeel += 20;
+  if (isDatacenter) sharedFeel += 20;
+  if (isResidential) sharedFeel -= 10;
+  if (isMobile) sharedFeel += 5;
+
+  if (!isNaN(humanScore)) {
+    if (humanScore >= 80) sharedFeel -= 8;
+    else if (humanScore >= 60) sharedFeel -= 3;
+    else if (humanScore >= 40) sharedFeel += 8;
+    else sharedFeel += 15;
+  }
+
+  if (abuse && abuse.data) {
+    const abuseScore4 = Number(abuse.data.abuseConfidenceScore || 0);
+    const totalReports4 = Number(abuse.data.totalReports || 0);
+
+    sharedFeel += Math.min(20, Math.round(abuseScore4 * 0.2));
+    if (totalReports4 >= 10) sharedFeel += 10;
+  }
+
+  if (sharedFeel < 0) sharedFeel = 0;
+  if (sharedFeel > 100) sharedFeel = 100;
+
   if (score > 100) score = 100;
   if (score < 0) score = 0;
 
@@ -406,13 +528,19 @@ function analyzeRisk(ipApi, cz88, abuse) {
     level: level,
     tags: tags.length ? tags.join(" / ") : "无明显异常",
     networkCategory: networkCategory,
+    isResidential: isResidential,
+    isDatacenter: isDatacenter,
+    isMobile: isMobile,
     proxyExit: proxyExit,
     highRiskProxy: highRiskProxy,
     cloudService: cloudService,
     blacklisted: blacklisted,
     abuseNode: abuseNode,
     attackInvolved: attackInvolved,
-    conclusion: conclusion
+    conclusion: conclusion,
+    riskValue: riskValue,
+    nativeFeel: nativeFeel,
+    sharedFeel: sharedFeel
   };
 }
 
@@ -446,6 +574,9 @@ function fetchAll() {
           const abuseScore = formatAbuseScore(abuseData);
           const ipapiScore = formatIpApiRisk(ipApi);
           const cz88Score = formatCz88Risk(cz88Data);
+          const riskValueText = formatRiskValue(risk.riskValue);
+          const nativeFeelText = formatNativeFeel(risk.nativeFeel);
+          const sharedFeelText = formatSharedFeel(risk.sharedFeel);
 
           const checks = [
             { name: "Netflix", run: checkNetflix },
@@ -475,6 +606,9 @@ function fetchAll() {
 
             lines.push("【网络画像】");
             lines.push("主类型：" + (risk.networkCategory || "-"));
+            lines.push("家宽：" + (risk.isResidential ? "是" : "否"));
+            lines.push("数据中心：" + (risk.isDatacenter ? "是" : "否"));
+            lines.push("移动网络：" + (risk.isMobile ? "是" : "否"));
             lines.push("原始网络标记：" + ((cz88Data && cz88Data.netWorkType) || "未返回"));
             lines.push("真人概率：" + formatHumanScoreFull(cz88Data && cz88Data.score));
             lines.push("代理标记：" + (ipApi.proxy ? "是" : "否"));
@@ -485,6 +619,12 @@ function fetchAll() {
             lines.push("综合评分：" + risk.score + " / 100");
             lines.push("质量判断：" + risk.level);
             lines.push("特征：" + risk.tags);
+            lines.push("");
+
+            lines.push("【风控画像】");
+            lines.push(line("风控值", riskValueText.text, riskValueText.level));
+            lines.push(line("原生感", nativeFeelText.text, nativeFeelText.level));
+            lines.push(line("共享感", sharedFeelText.text, sharedFeelText.level));
             lines.push("");
 
             lines.push("【多源评分】");
