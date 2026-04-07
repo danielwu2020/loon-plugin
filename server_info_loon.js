@@ -1,22 +1,9 @@
 /*************************************
- * 节点详情查询 Ultimate（完整详细版 / 无IPQS）
+ * 节点详情查询 Ultimate（完整详细版 / B方案 / 无IPQS）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
- * 功能：
- * - 强制走当前长按节点
- * - 基础信息
- * - 网络画像
- * - 家宽 / 数据中心 / 移动网络
- * - 真人概率中文化
- * - 综合评分
- * - 风控值 / 原生感 / 共享感
- * - 多源评分
- * - 代理 / 风险判断
- * - 黑名单 / 滥用
- * - Netflix / TikTok / YouTube 检测
- * - 最终结论
  *************************************/
 
 const TIMEOUT = 15000;
@@ -360,7 +347,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let abuseNode = false;
   let attackInvolved = false;
 
-  /***** ip-api部分 *****/
+  // ip-api
   if (ipApi.proxy === true) {
     proxyExit = true;
     highRiskProxy = true;
@@ -375,7 +362,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     if (tags.indexOf("机房托管") === -1) tags.push("机房托管");
   }
 
-  /***** cz88网络类型 *****/
+  // cz88网络类型
   if (networkCategory === "住宅") {
     score += 10;
   } else if (networkCategory === "移动数据") {
@@ -386,7 +373,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     if (tags.indexOf("机房网络") === -1) tags.push("机房网络");
   }
 
-  /***** 真人概率 *****/
+  // 真人概率
   if (!isNaN(humanScore)) {
     if (humanScore >= 80) {
       score += 8;
@@ -402,7 +389,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     }
   }
 
-  /***** AbuseIPDB *****/
+  // AbuseIPDB
   if (abuse && abuse.data) {
     const abuseScore = Number(abuse.data.abuseConfidenceScore || 0);
     const totalReports = Number(abuse.data.totalReports || 0);
@@ -425,12 +412,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
     else if (abuseScore > 0) score -= 5;
   }
 
-  /***** 风控值 / 原生感 / 共享感（推断版） *****/
+  // 风控值 / 原生感 / 共享感
   let riskValue = 0;
   let nativeFeel = 50;
   let sharedFeel = 20;
 
-  // 风控值：越高越危险
   if (ipApi.proxy === true) riskValue += 25;
   if (ipApi.hosting === true) riskValue += 25;
   if (isDatacenter) riskValue += 15;
@@ -455,7 +441,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (riskValue < 0) riskValue = 0;
   if (riskValue > 100) riskValue = 100;
 
-  // 原生感：越高越像真实当地用户
   if (isResidential) nativeFeel += 28;
   if (isMobile) nativeFeel += 12;
   if (isDatacenter) nativeFeel -= 30;
@@ -477,7 +462,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (nativeFeel < 0) nativeFeel = 0;
   if (nativeFeel > 100) nativeFeel = 100;
 
-  // 共享感：越高越像多人共用出口
   if (ipApi.hosting === true) sharedFeel += 30;
   if (ipApi.proxy === true) sharedFeel += 20;
   if (isDatacenter) sharedFeel += 20;
