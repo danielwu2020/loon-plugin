@@ -1,6 +1,13 @@
 /*************************************
  * 节点详情查询 Ultimate - Loon
- * 统一最终版
+ * - 首次初始化写入 API Key 到本地存储
+ * - 后续自动从本地存储读取
+ * - 强制走当前长按节点
+ * - 真人概率文字化
+ * - 多源评分
+ * - 商业VPN / 代理出口 / 高风险代理
+ * - Netflix / TikTok / YouTube 检测
+ * - 特征标签优化版
  *************************************/
 
 const TIMEOUT = 15000;
@@ -281,7 +288,12 @@ function formatIPQSScore(ipqs) {
     return { text: "高风险（" + s + "）", level: "fail" };
   }
 
-  if (ipqs.message) return { text: "接口异常：" + ipqs.message, level: "fail" };
+  const msg = String(ipqs.message || "");
+  if (/insufficient credits/i.test(msg)) {
+    return { text: "额度不足", level: "fail" };
+  }
+
+  if (msg) return { text: "接口异常：" + msg, level: "fail" };
   if (typeof ipqs.success !== "undefined" && ipqs.success === false) {
     return { text: "接口返回失败", level: "fail" };
   }
@@ -308,7 +320,7 @@ function formatIpApiRisk(ipApi) {
 function formatCz88Risk(cz88) {
   const t = (cz88 && cz88.netWorkType) ? String(cz88.netWorkType) : "";
   if (!t) return { text: "-", level: "warn" };
-  if (t.indexOf("机房") !== -1) return { text: t, level: "fail" };
+  if (t.indexOf("机房") !== -1 || t.indexOf("数据中心") !== -1) return { text: t, level: "fail" };
   if (t.indexOf("移动") !== -1) return { text: t, level: "warn" };
   return { text: t, level: "ok" };
 }
@@ -322,7 +334,7 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     networkCategory = "住宅";
   } else if (rawNetwork.indexOf("移动") !== -1) {
     networkCategory = "移动数据";
-  } else if (rawNetwork.indexOf("机房") !== -1) {
+  } else if (rawNetwork.indexOf("机房") !== -1 || rawNetwork.indexOf("数据中心") !== -1) {
     networkCategory = "机房";
   } else if (ipApi.hosting === true) {
     networkCategory = "机房";
@@ -357,7 +369,12 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     abuseNode = ipqs.recent_abuse === true;
     attackInvolved = ipqs.bot_status === true;
 
-    score = Math.max(0, 100 - Number(ipqs.fraud_score || 0));
+    const ipqsRisk = Number(ipqs.fraud_score || 0);
+    score = Math.max(0, 100 - ipqsRisk);
+
+    if (ipqsRisk >= 25) {
+      tags.push("IPQS风险");
+    }
 
     if (ipqs.hosting && networkCategory === "未知") networkCategory = "机房";
     if (!ipqs.hosting && !proxyExit && !commercialVPN && networkCategory === "未知") {
@@ -366,8 +383,6 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
     if ((ipqs.ISP && /mobile|wireless/i.test(ipqs.ISP)) && networkCategory === "未知") {
       networkCategory = "移动数据";
     }
-
-    tags.push("IPQS");
   } else {
     if (ipApi.proxy) {
       proxyExit = true;
@@ -401,17 +416,20 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
       blacklisted = true;
       abuseNode = true;
       highRiskProxy = true;
+      tags.push("滥用记录");
     }
+
     if (abuseScore >= 50 || totalReports >= 10) {
       attackInvolved = true;
+      if (tags.indexOf("攻击风险") === -1) {
+        tags.push("攻击风险");
+      }
     }
 
     if (abuseScore >= 80) score -= 25;
     else if (abuseScore >= 50) score -= 18;
     else if (abuseScore >= 20) score -= 10;
     else if (abuseScore > 0) score -= 5;
-
-    tags.push("AbuseIPDB");
   }
 
   const humanScore = Number(cz88 && cz88.score);
