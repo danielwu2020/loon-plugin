@@ -1,5 +1,5 @@
 /*************************************
- * 节点详情查询 Ultimate（完整详细版 / B方案 / 无IPQS）
+ * 节点详情查询 Ultimate（完整详细版 / 无IPQS / 三档代理判断）
  * 数据源：
  * - ip-api
  * - cz88
@@ -309,6 +309,51 @@ function formatSharedFeel(score) {
   return { text: n + "（高共享）", level: "fail" };
 }
 
+/*************** 可疑代理三档文案 ***************/
+function formatProxyTier(risk) {
+  if (risk.highRiskProxy) return { text: "高风险", level: "fail" };
+  if (risk.suspiciousProxy) return { text: "可疑", level: "warn" };
+  return { text: "正常", level: "ok" };
+}
+
+/*************** ASN / 类型细化 ***************/
+function inferAsnType(ipApi, cz88) {
+  const asText = String((ipApi && ipApi.as) || "").toLowerCase();
+  const ispText = String((ipApi && ipApi.isp) || "").toLowerCase();
+  const orgText = String((ipApi && ipApi.org) || "").toLowerCase();
+  const netText = String((cz88 && cz88.netWorkType) || "").toLowerCase();
+  const all = asText + " " + ispText + " " + orgText + " " + netText;
+
+  if (/cloud|hosting|datacenter|data center|vps|server|colo|ovh|oracle|aws|azure|google|gcp|digitalocean|linode|vultr|aliyun|tencent cloud|huawei cloud/.test(all)) {
+    return "云/机房ASN";
+  }
+  if (/mobile|wireless|移动|cellular/.test(all)) {
+    return "移动网络ASN";
+  }
+  if (/broadband|residential|cable|fiber|宽带|住宅|家庭/.test(all)) {
+    return "家宽ASN";
+  }
+  return "普通ASN";
+}
+
+function inferIpTypeLabel(risk, ipApi, cz88) {
+  if (risk.isResidential && !risk.proxyExit && !risk.cloudService) return "住宅宽带";
+  if (risk.isMobile && !risk.cloudService) return "移动数据";
+  if (risk.isDatacenter || ipApi.hosting) return "数据中心 / 机房";
+  if (ipApi.proxy) return "代理出口";
+  const raw = String((cz88 && cz88.netWorkType) || "");
+  return raw || "普通网络";
+}
+
+/*************** 历史行为评分 ***************/
+function formatHistoryBehavior(score) {
+  const n = Number(score);
+  if (isNaN(n)) return { text: "-", level: "warn" };
+  if (n >= 80) return { text: n + "（稳定干净）", level: "ok" };
+  if (n >= 55) return { text: n + "（基本正常）", level: "warn" };
+  return { text: n + "（历史较杂）", level: "fail" };
+}
+
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
@@ -341,6 +386,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const tags = [];
 
   let proxyExit = false;
+  let suspiciousProxy = false;
   let highRiskProxy = false;
   let cloudService = false;
   let blacklisted = false;
@@ -358,11 +404,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (ipApi.hosting === true) {
     cloudService = true;
     proxyExit = true;
+    highRiskProxy = true;
     score -= 22;
     if (tags.indexOf("机房托管") === -1) tags.push("机房托管");
   }
 
-  // cz88网络类型
+  // cz88 网络类型
   if (networkCategory === "住宅") {
     score += 10;
   } else if (networkCategory === "移动数据") {
@@ -381,11 +428,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
       score += 2;
     } else if (humanScore >= 40) {
       score -= 8;
+      suspiciousProxy = true;
       if (tags.indexOf("真人概率偏低") === -1) tags.push("真人概率偏低");
     } else {
       score -= 18;
+      suspiciousProxy = true;
       if (tags.indexOf("高度可疑") === -1) tags.push("高度可疑");
-      highRiskProxy = true;
     }
   }
 
@@ -432,7 +480,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (abuse && abuse.data) {
     const abuseScore2 = Number(abuse.data.abuseConfidenceScore || 0);
     const totalReports2 = Number(abuse.data.totalReports || 0);
-
     riskValue += Math.min(30, Math.round(abuseScore2 * 0.3));
     if (totalReports2 >= 10) riskValue += 10;
     else if (totalReports2 > 0) riskValue += 4;
@@ -478,13 +525,39 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (abuse && abuse.data) {
     const abuseScore4 = Number(abuse.data.abuseConfidenceScore || 0);
     const totalReports4 = Number(abuse.data.totalReports || 0);
-
     sharedFeel += Math.min(20, Math.round(abuseScore4 * 0.2));
     if (totalReports4 >= 10) sharedFeel += 10;
   }
 
   if (sharedFeel < 0) sharedFeel = 0;
   if (sharedFeel > 100) sharedFeel = 100;
+
+  // 历史行为评分：越高说明历史更干净
+  let historyBehavior = 90;
+  if (abuse && abuse.data) {
+    const abuseScore5 = Number(abuse.data.abuseConfidenceScore || 0);
+    const totalReports5 = Number(abuse.data.totalReports || 0);
+    historyBehavior -= Math.min(50, Math.round(abuseScore5 * 0.5));
+    historyBehavior -= Math.min(20, totalReports5);
+  }
+  if (ipApi.proxy === true) historyBehavior -= 10;
+  if (ipApi.hosting === true) historyBehavior -= 8;
+  if (!isNaN(humanScore) && humanScore < 40) historyBehavior -= 10;
+  if (historyBehavior < 0) historyBehavior = 0;
+  if (historyBehavior > 100) historyBehavior = 100;
+
+  // 三档代理判断
+  if (!highRiskProxy) {
+    if (proxyExit || cloudService) {
+      highRiskProxy = true;
+    } else if (blacklisted || abuseNode || attackInvolved) {
+      highRiskProxy = true;
+    } else if (riskValue >= 60) {
+      highRiskProxy = true;
+    } else if (suspiciousProxy || riskValue >= 35 || nativeFeel < 55) {
+      suspiciousProxy = true;
+    }
+  }
 
   if (score > 100) score = 100;
   if (score < 0) score = 0;
@@ -496,11 +569,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else level = "较差";
 
   let conclusion = "普通可用";
-  if (score >= 85 && networkCategory === "住宅" && !proxyExit && !blacklisted) {
+  if (score >= 85 && networkCategory === "住宅" && !proxyExit && !blacklisted && !highRiskProxy) {
     conclusion = "优质住宅IP，可放心使用";
-  } else if (score >= 70 && !blacklisted && networkCategory !== "机房") {
+  } else if (score >= 70 && !blacklisted && networkCategory !== "机房" && !highRiskProxy) {
     conclusion = "整体较稳，可正常使用";
-  } else if (networkCategory === "机房" || proxyExit) {
+  } else if (highRiskProxy || networkCategory === "机房" || proxyExit) {
     conclusion = "偏机房/代理出口，注册与风控场景需谨慎";
   }
   if (blacklisted || attackInvolved) {
@@ -516,6 +589,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     isDatacenter: isDatacenter,
     isMobile: isMobile,
     proxyExit: proxyExit,
+    suspiciousProxy: suspiciousProxy,
     highRiskProxy: highRiskProxy,
     cloudService: cloudService,
     blacklisted: blacklisted,
@@ -524,7 +598,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
     conclusion: conclusion,
     riskValue: riskValue,
     nativeFeel: nativeFeel,
-    sharedFeel: sharedFeel
+    sharedFeel: sharedFeel,
+    historyBehavior: historyBehavior
   };
 }
 
@@ -561,6 +636,10 @@ function fetchAll() {
           const riskValueText = formatRiskValue(risk.riskValue);
           const nativeFeelText = formatNativeFeel(risk.nativeFeel);
           const sharedFeelText = formatSharedFeel(risk.sharedFeel);
+          const proxyTierText = formatProxyTier(risk);
+          const historyBehaviorText = formatHistoryBehavior(risk.historyBehavior);
+          const asnType = inferAsnType(ipApi, cz88Data);
+          const ipTypeLabel = inferIpTypeLabel(risk, ipApi, cz88Data);
 
           const checks = [
             { name: "Netflix", run: checkNetflix },
@@ -584,6 +663,8 @@ function fetchAll() {
             lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
             lines.push("组织：" + (ipApi.org || "-"));
             lines.push("ASN：" + (ipApi.as || "-"));
+            lines.push("ASN类型：" + asnType);
+            lines.push("IP类型：" + ipTypeLabel);
             lines.push("时区：" + (ipApi.timezone || "-"));
             lines.push("经纬度：" + (ipApi.lat || "-") + " / " + (ipApi.lon || "-"));
             lines.push("");
@@ -609,6 +690,7 @@ function fetchAll() {
             lines.push(line("风控值", riskValueText.text, riskValueText.level));
             lines.push(line("原生感", nativeFeelText.text, nativeFeelText.level));
             lines.push(line("共享感", sharedFeelText.text, sharedFeelText.level));
+            lines.push(line("历史行为评分", historyBehaviorText.text, historyBehaviorText.level));
             lines.push("");
 
             lines.push("【多源评分】");
@@ -619,6 +701,8 @@ function fetchAll() {
 
             lines.push("【代理 / 风险判断】");
             lines.push(boolLine("代理出口", risk.proxyExit));
+            lines.push(line("代理等级", proxyTierText.text, proxyTierText.level));
+            lines.push(boolLine("可疑代理", risk.suspiciousProxy));
             lines.push(boolLine("高风险代理", risk.highRiskProxy));
             lines.push(boolLine("云服务", risk.cloudService));
             lines.push("");
