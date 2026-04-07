@@ -1,6 +1,6 @@
-#!name=节点详情查询 Pro Max
-#!desc=长按节点查询 IP质量 / 主流媒体 / GPT与AI服务
+#!name=节点详情查询 Ultimate
+#!desc=IP质量 / 代理风险 / 黑名单倾向 / 媒体 / GPT与AI检测
 #!author=danielwu2020
 
 [Script]
-generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询 Pro Max, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询 Ultimate, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
