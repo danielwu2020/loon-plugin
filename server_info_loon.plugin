@@ -1,6 +1,6 @@
-#!name=节点详情查询 Pro（调试版）
-#!desc=带API调试 / IPQS + AbuseIPDB 检测
+#!name=节点详情查询 Pro
+#!desc=IP质量 / 黑名单 / 真人概率 / 多源评分 / 媒体检测
 #!author=danielwu2020
 
 [Script]
-generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, argument="ipqs=你的IPQS_KEY&abuse=你的ABUSEIPDB_KEY&debug=1", tag=节点详情查询 Pro, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, argument="ipqs=你的IPQS_KEY&abuse=你的ABUSEIPDB_KEY", tag=节点详情查询 Pro, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
