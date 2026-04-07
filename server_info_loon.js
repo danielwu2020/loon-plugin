@@ -1,51 +1,86 @@
 /*************************************
- * 节点详情查询 - Loon 适配版
+ * 节点详情查询 - Loon稳定版
  *************************************/
 
 let message = "";
-const envParams = $environment && $environment.params ? $environment.params : null;
-const policyName =
-  (envParams && envParams.node) ||
-  (envParams && envParams.nodeInfo && envParams.nodeInfo.name) ||
-  (typeof envParams === "string" ? envParams : "当前节点");
+
+/*************** 关键修复：环境兼容 ***************/
+function getNodeName() {
+  try {
+    if (typeof $environment !== "undefined" && $environment.params) {
+      return (
+        $environment.params.node ||
+        ($environment.params.nodeInfo && $environment.params.nodeInfo.name)
+      );
+    }
+
+    if (typeof $loon !== "undefined" && $loon.node) {
+      return $loon.node;
+    }
+  } catch (e) {}
+
+  return "当前节点";
+}
+
+function getNodeParam() {
+  try {
+    if (typeof $environment !== "undefined" && $environment.params) {
+      return $environment.params.node || $environment.params;
+    }
+
+    if (typeof $loon !== "undefined" && $loon.node) {
+      return $loon.node;
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+const nodeName = getNodeName();
+const nodeParam = getNodeParam();
+
+/*************************************************/
 
 getIPInfo();
 
 function getIPInfo() {
   const url = "http://ip-api.com/json?lang=zh-CN";
-  const node = (envParams && envParams.node) ? envParams.node : envParams;
 
   const opts = {
-    url: url,
-    node: node
+    url: url
   };
+
+  if (nodeParam) {
+    opts.node = nodeParam;
+  }
 
   $httpClient.get(opts, function (error, response, data) {
     if (error) {
-      doneWithMessage("查询失败：IP 信息请求异常\n" + String(error));
+      done("IP查询失败\n" + error);
       return;
     }
 
     if (!data) {
-      doneWithMessage("查询失败：未获取到 IP 信息");
+      done("未获取到IP信息");
       return;
     }
 
-    fetchDetailInfo(data);
+    fetchDetail(data);
   });
 }
 
-function fetchDetailInfo(ipApiBody) {
+function fetchDetail(ipBody) {
   let ipData;
+
   try {
-    ipData = JSON.parse(ipApiBody);
+    ipData = JSON.parse(ipBody);
   } catch (e) {
-    doneWithMessage("查询失败：IP 数据解析错误");
+    done("IP数据解析失败");
     return;
   }
 
   if (!ipData.query) {
-    doneWithMessage("查询失败：未拿到出口 IP");
+    done("未获取到出口IP");
     return;
   }
 
@@ -53,60 +88,49 @@ function fetchDetailInfo(ipApiBody) {
 
   $httpClient.get(url, function (error, response, data) {
     if (error) {
-      doneWithMessage("查询失败：详细信息接口异常\n" + String(error));
+      done("详情查询失败\n" + error);
       return;
     }
 
     if (!data) {
-      doneWithMessage("查询失败：未获取到详细信息");
+      done("未获取到详情数据");
       return;
     }
 
-    buildMessage(data, ipApiBody);
-    $done({
-      title: "节点详情查询",
-      message: message
-    });
+    build(ipData, data);
   });
 }
 
-function buildMessage(cz88Body, ipApiBody) {
+function build(ipData, cz88Body) {
   let detail = {};
-  let ipData = {};
 
   try {
-    const cz88Json = JSON.parse(cz88Body);
-    detail = cz88Json.data || {};
-  } catch (e) {}
-
-  try {
-    ipData = JSON.parse(ipApiBody);
+    const obj = JSON.parse(cz88Body);
+    detail = obj.data || {};
   } catch (e) {}
 
   const lines = [];
   lines.push("IP：" + (detail.ip || ipData.query || "-"));
-  lines.push("运营商(isp)：" + (detail.isp || ipData.isp || "-"));
+  lines.push("ISP：" + (detail.isp || ipData.isp || "-"));
   lines.push("网络类型：" + (detail.netWorkType || "-"));
   lines.push("真人概率：" + (detail.score || "-"));
   lines.push(
     "位置：" +
-      (detail.countryCode || ipData.countryCode || "-") + "-" +
-      (detail.country || ipData.country || "-") + "-" +
-      (detail.province || "-") + "-" +
-      (detail.city || ipData.city || "-") + "-" +
-      (detail.districts || "-")
+      (ipData.country || "-") + "-" +
+      (ipData.regionName || "-") + "-" +
+      (ipData.city || "-")
   );
-  lines.push("ZIP：" + (ipData.zip || "-"));
-  lines.push("经纬度：" + (ipData.lon || "-") + " / " + (ipData.lat || "-"));
-  lines.push("时区：" + (ipData.timezone || "-"));
-  lines.push("节点：" + (policyName || "-"));
+  lines.push("经纬度：" + (ipData.lon || "-") + "/" + (ipData.lat || "-"));
+  lines.push("节点：" + nodeName);
 
   message = lines.join("\n");
+
+  done(message);
 }
 
-function doneWithMessage(text) {
+function done(msg) {
   $done({
     title: "节点详情查询",
-    message: text
+    message: msg
   });
 }
