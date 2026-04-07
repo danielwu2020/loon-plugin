@@ -1,13 +1,9 @@
 /*************************************
- * 节点详情查询 Ultimate - Loon
- * - 首次初始化写入 API Key 到本地存储
- * - 后续自动从本地存储读取
- * - 强制走当前长按节点
- * - 真人概率文字化
- * - 多源评分
- * - 商业VPN / 代理出口 / 高风险代理
- * - Netflix / TikTok / YouTube 检测
- * - 特征标签优化版
+ * 节点详情查询 Ultimate（无IPQS纯净版）
+ * 数据源：
+ * - ip-api
+ * - cz88
+ * - AbuseIPDB
  *************************************/
 
 const TIMEOUT = 15000;
@@ -41,22 +37,20 @@ function getPersistedOrArg(storeKey, argValue) {
   }
 }
 
-const IPQS_KEY = getPersistedOrArg("NODE_CHECK_IPQS_KEY", ARGS.ipqs || "");
 const ABUSEIPDB_KEY = getPersistedOrArg("NODE_CHECK_ABUSE_KEY", ARGS.abuse || "");
 
 /*************** 初始化通知 ***************/
 function notifyInitIfNeeded() {
   try {
-    if (ARGS.init === "1") {
+    if (ARGS.init === "1" && ABUSEIPDB_KEY) {
       $notification.post(
-        "节点详情查询 Pro",
-        "API 已写入本地存储",
+        "节点详情查询 Ultimate",
+        "AbuseIPDB Key 已写入本地存储",
         "以后可使用不带 argument 的普通版插件"
       );
     }
   } catch (e) {}
 }
-
 notifyInitIfNeeded();
 
 /*************** 节点环境 ***************/
@@ -168,31 +162,13 @@ function formatHumanScoreText(score) {
   return "很像代理/机房";
 }
 
-/*************** API ***************/
-function checkIPQS(ip, cb) {
-  if (!IPQS_KEY) return cb(null);
-
-  const url =
-    "https://ipqualityscore.com/api/json/ip/" +
-    IPQS_KEY +
-    "/" +
-    ip +
-    "?strictness=1&allow_public_access_points=true&fast=false&lighter_penalties=true&mobile=true";
-
-  httpGet(
-    {
-      url: url,
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
-    },
-    function (err, resp, data) {
-      if (err || !data) return cb(null);
-      cb(parseJSON(data) || null);
-    }
-  );
+function formatHumanScoreFull(score) {
+  const n = Number(score);
+  if (isNaN(n)) return "-";
+  return n + "（" + formatHumanScoreText(n) + "）";
 }
 
+/*************** AbuseIPDB ***************/
 function checkAbuseIPDB(ip, cb) {
   if (!ABUSEIPDB_KEY) return cb(null);
 
@@ -230,7 +206,7 @@ function checkNetflix(cb) {
       if (code === 200) return cb("可用", "ok");
       if (code === 404) return cb("仅自制剧", "warn");
       if (code === 403) return cb("被拒绝", "fail");
-      cb("未知(" + code + ")", "warn");
+      return cb("未知(" + code + ")", "warn");
     }
   );
 }
@@ -251,7 +227,7 @@ function checkTikTok(cb) {
       if (code === 200 && body) return cb("可访问", "ok");
       if (code === 403) return cb("被拒绝", "fail");
       if (code === 301 || code === 302) return cb("重定向", "warn");
-      cb("未知(" + code + ")", "warn");
+      return cb("未知(" + code + ")", "warn");
     }
   );
 }
@@ -271,37 +247,14 @@ function checkYouTube(cb) {
       if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
       const code = resp.status || resp.statusCode || 0;
       if (code === 200) return cb("可访问", "warn");
-      cb("未知(" + code + ")", "warn");
+      return cb("未知(" + code + ")", "warn");
     }
   );
 }
 
 /*************** 多源评分文案 ***************/
-function formatIPQSScore(ipqs) {
-  if (!IPQS_KEY) return { text: "未配置Key", level: "warn" };
-  if (!ipqs) return { text: "请求失败", level: "fail" };
-
-  if (typeof ipqs.fraud_score !== "undefined") {
-    const s = Number(ipqs.fraud_score);
-    if (s < 25) return { text: "低风险（" + s + "）", level: "ok" };
-    if (s < 50) return { text: "一般风险（" + s + "）", level: "warn" };
-    return { text: "高风险（" + s + "）", level: "fail" };
-  }
-
-  const msg = String(ipqs.message || "");
-  if (/insufficient credits/i.test(msg)) {
-    return { text: "额度不足", level: "fail" };
-  }
-
-  if (msg) return { text: "接口异常：" + msg, level: "fail" };
-  if (typeof ipqs.success !== "undefined" && ipqs.success === false) {
-    return { text: "接口返回失败", level: "fail" };
-  }
-  return { text: "返回异常", level: "fail" };
-}
-
 function formatAbuseScore(abuse) {
-  if (!ABUSEIPDB_KEY) return { text: "未配置Key", level: "warn" };
+  if (!ABUSEIPDB_KEY) return { text: "未启用", level: "warn" };
   if (!abuse || !abuse.data) return { text: "请求失败", level: "fail" };
 
   const s = Number(abuse.data.abuseConfidenceScore || 0);
@@ -312,102 +265,99 @@ function formatAbuseScore(abuse) {
 
 function formatIpApiRisk(ipApi) {
   if (!ipApi) return { text: "未知", level: "warn" };
-  if (ipApi.hosting) return { text: "机房/服务器", level: "fail" };
-  if (ipApi.proxy) return { text: "代理", level: "warn" };
+  if (ipApi.hosting) return { text: "机房/托管网络", level: "fail" };
+  if (ipApi.proxy) return { text: "代理出口", level: "warn" };
   return { text: "普通网络", level: "ok" };
 }
 
 function formatCz88Risk(cz88) {
   const t = (cz88 && cz88.netWorkType) ? String(cz88.netWorkType) : "";
-  if (!t) return { text: "-", level: "warn" };
-  if (t.indexOf("机房") !== -1 || t.indexOf("数据中心") !== -1) return { text: t, level: "fail" };
-  if (t.indexOf("移动") !== -1) return { text: t, level: "warn" };
+  if (!t) return { text: "未返回", level: "warn" };
+  if (t.indexOf("机房") !== -1 || t.indexOf("数据中心") !== -1) {
+    return { text: t, level: "fail" };
+  }
+  if (t.indexOf("移动") !== -1) {
+    return { text: t, level: "warn" };
+  }
   return { text: t, level: "ok" };
 }
 
 /*************** 风险分析 ***************/
-function analyzeRisk(ipApi, cz88, ipqs, abuse) {
-  const rawNetwork = ((cz88 && cz88.netWorkType) || "").toLowerCase();
+function analyzeRisk(ipApi, cz88, abuse) {
+  const rawNetwork = String((cz88 && cz88.netWorkType) || "");
+  const rawLower = rawNetwork.toLowerCase();
+  const humanScore = Number(cz88 && cz88.score);
 
-  let networkCategory = "未知";
-  if (rawNetwork.indexOf("住宅") !== -1 || rawNetwork.indexOf("家庭") !== -1 || rawNetwork.indexOf("宽带") !== -1) {
+  let networkCategory = "普通网络";
+  if (
+    rawLower.indexOf("住宅") !== -1 ||
+    rawLower.indexOf("家庭") !== -1 ||
+    rawLower.indexOf("宽带") !== -1
+  ) {
     networkCategory = "住宅";
-  } else if (rawNetwork.indexOf("移动") !== -1) {
+  } else if (rawLower.indexOf("移动") !== -1) {
     networkCategory = "移动数据";
-  } else if (rawNetwork.indexOf("机房") !== -1 || rawNetwork.indexOf("数据中心") !== -1) {
-    networkCategory = "机房";
-  } else if (ipApi.hosting === true) {
+  } else if (
+    rawLower.indexOf("机房") !== -1 ||
+    rawLower.indexOf("数据中心") !== -1 ||
+    ipApi.hosting === true
+  ) {
     networkCategory = "机房";
   }
 
   let score = 100;
   const tags = [];
 
-  let commercialVPN = false;
   let proxyExit = false;
   let highRiskProxy = false;
+  let cloudService = false;
   let blacklisted = false;
   let abuseNode = false;
-  let torNode = false;
   let attackInvolved = false;
-  let cloudService = false;
 
-  if (ipqs && typeof ipqs.fraud_score !== "undefined") {
-    commercialVPN = ipqs.vpn === true || ipqs.active_vpn === true;
-    proxyExit = ipqs.proxy === true || ipqs.hosting === true;
-    highRiskProxy =
-      ipqs.proxy === true ||
-      ipqs.vpn === true ||
-      ipqs.active_vpn === true ||
-      ipqs.tor === true ||
-      ipqs.active_tor === true ||
-      ipqs.recent_abuse === true;
+  /***** ip-api部分 *****/
+  if (ipApi.proxy === true) {
+    proxyExit = true;
+    highRiskProxy = true;
+    score -= 18;
+    if (tags.indexOf("代理出口") === -1) tags.push("代理出口");
+  }
 
-    torNode = ipqs.tor === true || ipqs.active_tor === true;
-    cloudService = ipqs.hosting === true;
-    blacklisted = ipqs.recent_abuse === true || ipqs.bot_status === true;
-    abuseNode = ipqs.recent_abuse === true;
-    attackInvolved = ipqs.bot_status === true;
+  if (ipApi.hosting === true) {
+    cloudService = true;
+    proxyExit = true;
+    score -= 22;
+    if (tags.indexOf("机房托管") === -1) tags.push("机房托管");
+  }
 
-    const ipqsRisk = Number(ipqs.fraud_score || 0);
-    score = Math.max(0, 100 - ipqsRisk);
+  /***** cz88网络类型 *****/
+  if (networkCategory === "住宅") {
+    score += 10;
+  } else if (networkCategory === "移动数据") {
+    score += 4;
+    if (tags.indexOf("移动网络") === -1) tags.push("移动网络");
+  } else if (networkCategory === "机房") {
+    score -= 15;
+    if (tags.indexOf("机房网络") === -1) tags.push("机房网络");
+  }
 
-    if (ipqsRisk >= 25) {
-      tags.push("IPQS风险");
-    }
-
-    if (ipqs.hosting && networkCategory === "未知") networkCategory = "机房";
-    if (!ipqs.hosting && !proxyExit && !commercialVPN && networkCategory === "未知") {
-      networkCategory = "住宅";
-    }
-    if ((ipqs.ISP && /mobile|wireless/i.test(ipqs.ISP)) && networkCategory === "未知") {
-      networkCategory = "移动数据";
-    }
-  } else {
-    if (ipApi.proxy) {
-      proxyExit = true;
-      highRiskProxy = true;
-      score -= 20;
-      tags.push("代理");
-    }
-
-    if (ipApi.hosting) {
-      cloudService = true;
-      proxyExit = true;
-      score -= 25;
-      tags.push("机房");
-    }
-
-    if (networkCategory === "住宅") {
+  /***** 真人概率 *****/
+  if (!isNaN(humanScore)) {
+    if (humanScore >= 80) {
       score += 8;
-      tags.push("住宅特征");
-    }
-    if (networkCategory === "移动数据") {
-      score += 5;
-      tags.push("移动特征");
+    } else if (humanScore >= 60) {
+      score += 2;
+    } else if (humanScore >= 40) {
+      score -= 8;
+      if (tags.indexOf("真人概率偏低") === -1) tags.push("真人概率偏低");
+    } else {
+      score -= 18;
+      if (tags.indexOf("高度可疑") === -1) tags.push("高度可疑");
+      highRiskProxy = true;
     }
   }
 
+  /***** AbuseIPDB *****/
   if (abuse && abuse.data) {
     const abuseScore = Number(abuse.data.abuseConfidenceScore || 0);
     const totalReports = Number(abuse.data.totalReports || 0);
@@ -416,28 +366,18 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
       blacklisted = true;
       abuseNode = true;
       highRiskProxy = true;
-      tags.push("滥用记录");
+      if (tags.indexOf("滥用记录") === -1) tags.push("滥用记录");
     }
 
     if (abuseScore >= 50 || totalReports >= 10) {
       attackInvolved = true;
-      if (tags.indexOf("攻击风险") === -1) {
-        tags.push("攻击风险");
-      }
+      if (tags.indexOf("攻击风险") === -1) tags.push("攻击风险");
     }
 
     if (abuseScore >= 80) score -= 25;
     else if (abuseScore >= 50) score -= 18;
     else if (abuseScore >= 20) score -= 10;
     else if (abuseScore > 0) score -= 5;
-  }
-
-  const humanScore = Number(cz88 && cz88.score);
-  if (!isNaN(humanScore)) {
-    if (humanScore >= 80) score += 8;
-    else if (humanScore >= 60) score += 2;
-    else if (humanScore >= 40) score -= 8;
-    else score -= 18;
   }
 
   if (score > 100) score = 100;
@@ -449,19 +389,30 @@ function analyzeRisk(ipApi, cz88, ipqs, abuse) {
   else if (score >= 50) level = "一般";
   else level = "较差";
 
+  let conclusion = "普通可用";
+  if (score >= 85 && networkCategory === "住宅" && !proxyExit && !blacklisted) {
+    conclusion = "优质住宅IP，可放心使用";
+  } else if (score >= 70 && !blacklisted && networkCategory !== "机房") {
+    conclusion = "整体较稳，可正常使用";
+  } else if (networkCategory === "机房" || proxyExit) {
+    conclusion = "偏机房/代理出口，注册与风控场景需谨慎";
+  }
+  if (blacklisted || attackInvolved) {
+    conclusion = "存在滥用或攻击风险，建议更换节点";
+  }
+
   return {
     score: score,
     level: level,
     tags: tags.length ? tags.join(" / ") : "无明显异常",
     networkCategory: networkCategory,
-    commercialVPN: commercialVPN,
     proxyExit: proxyExit,
     highRiskProxy: highRiskProxy,
+    cloudService: cloudService,
     blacklisted: blacklisted,
     abuseNode: abuseNode,
-    torNode: torNode,
     attackInvolved: attackInvolved,
-    cloudService: cloudService
+    conclusion: conclusion
   };
 }
 
@@ -470,10 +421,12 @@ function fetchAll() {
   httpGet(
     "http://ip-api.com/json?lang=zh-CN&fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query,proxy,hosting",
     function (err1, res1, data1) {
-      if (err1 || !data1) return done("IP查询失败\n" + String(err1 || ""));
+      if (err1 || !data1) {
+        return done("IP查询失败\n" + String(err1 || ""));
+      }
 
       const ipApi = parseJSON(data1);
-      if (!ipApi || ipApi.status !== "success" || !ipApi.query) {
+      if (!ipApi || !ipApi.query) {
         return done("IP数据解析失败");
       }
 
@@ -482,75 +435,92 @@ function fetchAll() {
         let cz88Data = null;
         if (!err2 && data2) {
           const cz88Json = parseJSON(data2);
-          if (cz88Json && cz88Json.data) cz88Data = cz88Json.data;
+          if (cz88Json && cz88Json.data) {
+            cz88Data = cz88Json.data;
+          }
         }
 
-        checkIPQS(ipApi.query, function (ipqsData) {
-          checkAbuseIPDB(ipApi.query, function (abuseData) {
-            const risk = analyzeRisk(ipApi, cz88Data || {}, ipqsData, abuseData);
+        checkAbuseIPDB(ipApi.query, function (abuseData) {
+          const risk = analyzeRisk(ipApi, cz88Data || {}, abuseData);
 
-            const ipqsScore = formatIPQSScore(ipqsData);
-            const abuseScore = formatAbuseScore(abuseData);
-            const ipapiScore = formatIpApiRisk(ipApi);
-            const cz88Score = formatCz88Risk(cz88Data);
+          const abuseScore = formatAbuseScore(abuseData);
+          const ipapiScore = formatIpApiRisk(ipApi);
+          const cz88Score = formatCz88Risk(cz88Data);
 
-            const checks = [
-              { name: "Netflix", run: checkNetflix },
-              { name: "TikTok", run: checkTikTok },
-              { name: "YouTube", run: checkYouTube }
-            ];
+          const checks = [
+            { name: "Netflix", run: checkNetflix },
+            { name: "TikTok", run: checkTikTok },
+            { name: "YouTube", run: checkYouTube }
+          ];
 
-            runChecks(checks, function (results) {
-              const lines = [];
+          runChecks(checks, function (results) {
+            const lines = [];
 
-              lines.push("【基础信息】");
-              lines.push("节点：" + NODE_NAME);
-              lines.push("IP：" + (ipApi.query || "-"));
-              lines.push("国家/地区：" + (ipApi.country || "-"));
-              lines.push("地区：" + (ipApi.regionName || "-"));
-              lines.push("城市：" + (ipApi.city || "-"));
-              lines.push("ISP：" + ((cz88Data && cz88Data.isp) || (ipqsData && ipqsData.ISP) || ipApi.isp || "-"));
-              lines.push("组织：" + (ipApi.org || "-"));
-              lines.push("ASN：" + (ipApi.as || "-"));
-              lines.push("网络类型：" + (risk.networkCategory || "-"));
-              lines.push("真人概率：" + formatHumanScoreText(cz88Data && cz88Data.score));
-              lines.push("时区：" + (ipApi.timezone || "-"));
-              lines.push("");
+            lines.push("【节点信息】");
+            lines.push("节点：" + NODE_NAME);
+            lines.push("");
 
-              lines.push("【IP质量】");
-              lines.push("综合评分：" + risk.score + " / 100");
-              lines.push("质量判断：" + risk.level);
-              lines.push("特征：" + risk.tags);
-              lines.push("");
+            lines.push("【基础信息】");
+            lines.push("IP：" + (ipApi.query || "-"));
+            lines.push("国家/地区：" + (ipApi.country || "-"));
+            lines.push("地区：" + (ipApi.regionName || "-"));
+            lines.push("城市：" + (ipApi.city || "-"));
+            lines.push("ZIP：" + (ipApi.zip || "-"));
+            lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
+            lines.push("组织：" + (ipApi.org || "-"));
+            lines.push("ASN：" + (ipApi.as || "-"));
+            lines.push("时区：" + (ipApi.timezone || "-"));
+            lines.push("经纬度：" + (ipApi.lat || "-") + " / " + (ipApi.lon || "-"));
+            lines.push("");
 
-              lines.push("【多源评分】");
-              lines.push(line("IPQS", ipqsScore.text, ipqsScore.level));
-              lines.push(line("AbuseIPDB", abuseScore.text, abuseScore.level));
-              lines.push(line("ip-api", ipapiScore.text, ipapiScore.level));
-              lines.push(line("cz88", cz88Score.text, cz88Score.level));
-              lines.push("");
+            lines.push("【网络画像】");
+            lines.push("主类型：" + (risk.networkCategory || "-"));
+            lines.push("原始网络标记：" + ((cz88Data && cz88Data.netWorkType) || "未返回"));
+            lines.push("真人概率：" + formatHumanScoreFull(cz88Data && cz88Data.score));
+            lines.push("代理标记：" + (ipApi.proxy ? "是" : "否"));
+            lines.push("托管标记：" + (ipApi.hosting ? "是" : "否"));
+            lines.push("");
 
-              lines.push("【代理检测】");
-              lines.push(boolLine("商业VPN", risk.commercialVPN));
-              lines.push(boolLine("代理出口", risk.proxyExit));
-              lines.push(boolLine("高风险代理", risk.highRiskProxy));
-              lines.push(boolLine("TOR节点", risk.torNode));
-              lines.push(boolLine("云服务", risk.cloudService));
-              lines.push("");
+            lines.push("【综合评分】");
+            lines.push("综合评分：" + risk.score + " / 100");
+            lines.push("质量判断：" + risk.level);
+            lines.push("特征：" + risk.tags);
+            lines.push("");
 
-              lines.push("【黑名单 / 风险】");
-              lines.push(boolLine("黑名单", risk.blacklisted));
-              lines.push(boolLine("滥用节点", risk.abuseNode));
-              lines.push(boolLine("参与攻击", risk.attackInvolved));
-              lines.push("");
+            lines.push("【多源评分】");
+            lines.push(line("AbuseIPDB", abuseScore.text, abuseScore.level));
+            lines.push(line("ip-api", ipapiScore.text, ipapiScore.level));
+            lines.push(line("cz88", cz88Score.text, cz88Score.level));
+            lines.push("");
 
-              lines.push("【媒体检测】");
-              for (var i = 0; i < results.length; i++) {
-                lines.push(line(results[i].name, results[i].value, results[i].level));
-              }
+            lines.push("【代理 / 风险判断】");
+            lines.push(boolLine("代理出口", risk.proxyExit));
+            lines.push(boolLine("高风险代理", risk.highRiskProxy));
+            lines.push(boolLine("云服务", risk.cloudService));
+            lines.push("");
 
-              done(lines.join("\n"));
-            });
+            lines.push("【黑名单 / 滥用】");
+            lines.push(boolLine("黑名单", risk.blacklisted));
+            lines.push(boolLine("滥用节点", risk.abuseNode));
+            lines.push(boolLine("参与攻击", risk.attackInvolved));
+            if (abuseData && abuseData.data) {
+              lines.push("Abuse置信分：" + (abuseData.data.abuseConfidenceScore || 0));
+              lines.push("滥用报告数：" + (abuseData.data.totalReports || 0));
+            } else {
+              lines.push("Abuse置信分：未启用");
+            }
+            lines.push("");
+
+            lines.push("【媒体检测】");
+            for (var i = 0; i < results.length; i++) {
+              lines.push(line(results[i].name, results[i].value, results[i].level));
+            }
+            lines.push("");
+
+            lines.push("【结论】");
+            lines.push(risk.conclusion);
+
+            done(lines.join("\n"));
           });
         });
       });
