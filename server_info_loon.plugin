@@ -1,7 +1,6 @@
 #!name=节点详情查询
 #!desc=长按节点查询 IP / ISP / 网络类型 / 真人概率
 #!author=danielwu2020
-#!homepage=https://github.com/danielwu2020/loon-plugin
 
 [Script]
 generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
