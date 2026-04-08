@@ -1,6 +1,6 @@
-#!name=代理链路检测
-#!desc=NodeLinkCheck 原版
+#!name=代理链路检测（修复版）
+#!desc=兼容远程 Sub-Store
 #!system=ios
 
 [Script]
-generic script-path=https://raw.githubusercontent.com/I-am-R-E/Functional-Store-Hub/Master/NodeLinkCheck/Script/NodeLinkCheck.js, timeout=300, tag=代理链路检测, img-url=link.circle.system
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/NodeLinkCheck.js, timeout=300, tag=代理链路检测, img-url=link.circle.system
