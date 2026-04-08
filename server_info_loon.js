@@ -1,5 +1,5 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - 补丁增强完整版）
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）
  * 数据源：
  * - ip-api
  * - cz88
@@ -267,7 +267,6 @@ function detectCloudProvider(ipApi, cz88) {
     }
   }
 
-  // 补一个更谨慎的 Google / Microsoft 判断，减少普通 Google/微软组织误伤
   if (/\bgoogle\b/i.test(text) && /\bcloud\b/i.test(text)) {
     return { hit: true, name: "Google Cloud", keyword: "google + cloud" };
   }
@@ -276,6 +275,55 @@ function detectCloudProvider(ipApi, cz88) {
   }
 
   return { hit: false, name: "", keyword: "" };
+}
+
+/*************** OpenAI 支持地区（用于 GPT 检测） ***************/
+const OPENAI_SUPPORTED_LOCS = [
+  "AL","DZ","AD","AO","AG","AR","AM","AU","AT","AZ",
+  "BS","BD","BB","BE","BZ","BJ","BT","BA","BW","BR","BN","BG","BF","CV","CA",
+  "CL","CO","KM","CR","CI","HR","CY","DK","DJ","DM","DO",
+  "EC","SV","EE","FJ","FI","FR","GA","GM","GE","DE","GH","GR","GD","GT","GN","GW","GY",
+  "HT","HN","HU",
+  "IS","IN","ID","IQ","IE","IL","IT",
+  "JM","JP","JO",
+  "KZ","KE","KI","KW","KG",
+  "LV","LB","LS","LR","LI","LT","LU",
+  "MG","MW","MY","MV","ML","MT","MH","MR","MU","MX","FM","MD","MC","MN","ME","MA","MZ","MM",
+  "NA","NR","NP","NL","NZ","NE","NG","MK","NO",
+  "OM",
+  "PK","PW","PA","PG","PY","PE","PH","PL","PT",
+  "QA",
+  "RO","RW",
+  "KN","LC","VC","WS","SM","ST","SN","RS","SC","SL","SG","SK","SI","SB","ZA","KR","ES","LK","SR","SE","CH",
+  "TW","TZ","TH","TL","TG","TO","TT","TN","TR","TV",
+  "UG","UA","AE","GB","US","UY","VU",
+  "ZM"
+];
+
+/*************** trace / GPT 工具 ***************/
+function parseTrace(text) {
+  const obj = {};
+  String(text || "").split("\n").forEach(function (line) {
+    const idx = line.indexOf("=");
+    if (idx > 0) {
+      const k = line.slice(0, idx).trim();
+      const v = line.slice(idx + 1).trim();
+      obj[k] = v;
+    }
+  });
+  return obj;
+}
+
+function isOpenAISupportedLoc(loc) {
+  const code = String(loc || "").trim().toUpperCase();
+  return OPENAI_SUPPORTED_LOCS.indexOf(code) !== -1;
+}
+
+function normalizeWarpValue(v) {
+  const s = lower(v);
+  if (s === "on" || s === "plus") return "on";
+  if (s === "off") return "off";
+  return s || "unknown";
 }
 
 /*************** 真人概率 ***************/
@@ -331,7 +379,8 @@ function checkNetflix(cb) {
   const tests = [
     { region: "US", id: "70143836" },
     { region: "JP", id: "80018499" },
-    { region: "SG", id: "81215567" }
+    { region: "SG", id: "81215567" },
+    { region: "GB", id: "80007226" }
   ];
 
   let idx = 0;
@@ -358,6 +407,7 @@ function checkNetflix(cb) {
           return next();
         }
         const code = resp.status || resp.statusCode || 0;
+
         if (code === 200) return cb("完整解锁（" + item.region + "）", "ok");
         if (code === 404) {
           onlyOriginal = true;
@@ -443,23 +493,80 @@ function checkYouTube(cb) {
   );
 }
 
-function checkChatGPT(cb) {
+function checkChatGPTWithRisk(risk, cb) {
   httpGet(
     {
-      url: "https://chat.openai.com/",
+      url: "https://chat.openai.com/cdn-cgi/trace",
       headers: {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "en"
       }
     },
     function (err, resp, data) {
-      if (err || !resp) return cb("检测失败", "fail");
-      const code = resp.status || resp.statusCode || 0;
-      const body = data || "";
-      if (code === 200 || code === 301 || code === 302) return cb("可访问", "ok");
-      if (/unsupported country/i.test(body)) return cb("地区限制", "fail");
-      if (code === 403) return cb("被拒绝", "fail");
-      return cb("未知(" + code + ")", "warn");
+      if (!err && resp && data) {
+        const code = resp.status || resp.statusCode || 0;
+        const body = String(data || "");
+
+        if (code === 200 && body.indexOf("loc=") !== -1) {
+          const trace = parseTrace(body);
+          const loc = String(trace.loc || "").toUpperCase();
+          const traceIp = trace.ip || "-";
+          const warp = normalizeWarpValue(trace.warp || "");
+
+          if (isOpenAISupportedLoc(loc)) {
+            if (warp === "on") {
+              return cb("WARP解锁（" + loc + " / " + traceIp + "）", "warn");
+            }
+
+            if (
+              risk &&
+              (
+                risk.proxyExit ||
+                risk.cloudService ||
+                risk.isDatacenter ||
+                risk.cloudProvider.hit ||
+                risk.suspiciousProxy
+              )
+            ) {
+              return cb("代理解锁（" + loc + " / " + traceIp + "）", "warn");
+            }
+
+            return cb("原生解锁（" + loc + " / " + traceIp + "）", "ok");
+          }
+
+          return cb("未解锁（" + (loc || "未知地区") + " / " + traceIp + "）", "fail");
+        }
+      }
+
+      httpGet(
+        {
+          url: "https://chat.openai.com/",
+          headers: {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en"
+          }
+        },
+        function (err2, resp2, data2) {
+          if (err2 || !resp2) return cb("检测失败", "fail");
+
+          const code2 = resp2.status || resp2.statusCode || 0;
+          const body2 = String(data2 || "");
+
+          if (/unsupported country/i.test(body2) || /not available in your country/i.test(body2)) {
+            return cb("地区限制", "fail");
+          }
+
+          if (code2 === 200 || code2 === 301 || code2 === 302) {
+            return cb("网页可访问（未识别地区）", "warn");
+          }
+
+          if (code2 === 403) {
+            return cb("被拒绝", "fail");
+          }
+
+          return cb("未知(" + code2 + ")", "warn");
+        }
+      );
     }
   );
 }
@@ -1462,7 +1569,6 @@ function fetchAll() {
       const ipApi = parseJSON(data1);
       if (!ipApi || !ipApi.query) return done("IP数据解析失败");
 
-      // 整体结果缓存，减少重复检测
       const resultCacheKey = getResultCacheKey(ipApi.query);
       const resultCache = readCache(resultCacheKey);
       if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
@@ -1510,7 +1616,12 @@ function fetchAll() {
             { name: "Disney+", run: checkDisney },
             { name: "TikTok", run: checkTikTok },
             { name: "YouTube", run: checkYouTube },
-            { name: "ChatGPT", run: checkChatGPT }
+            {
+              name: "ChatGPT",
+              run: function (cb) {
+                checkChatGPTWithRisk(risk, cb);
+              }
+            }
           ];
 
           runChecks(checks, function (results) {
