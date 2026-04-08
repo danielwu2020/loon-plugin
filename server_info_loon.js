@@ -1,9 +1,15 @@
 /*************************************
- * 节点详情查询 Ultimate（完整优化细节版 / 无额外API）
+ * 节点详情查询 Ultimate（细节拉满优化版 / 无额外API）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
+ *
+ * 特点：
+ * - 住宅 / 商宽 / 机房宽带嫌疑 / 数据中心 / 移动网络
+ * - 共享风险 / 关联风险 / 机场嫌疑 单独展示
+ * - 黑名单与行为风险分离
+ * - 结论更严谨
  *************************************/
 
 const TIMEOUT = 15000;
@@ -176,7 +182,7 @@ function checkAbuseIPDB(ip, cb) {
   );
 }
 
-/*************** 媒体检测 / 流媒体 ***************/
+/*************** 媒体检测 ***************/
 function checkNetflix(cb) {
   httpGet(
     { url: "https://www.netflix.com/title/81215567", headers: { "User-Agent": "Mozilla/5.0" } },
@@ -305,14 +311,31 @@ function formatShareCount(score) {
   return { text: "80+（偏高）", level: "fail" };
 }
 
+function formatRiskBand(n) {
+  const v = Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
+  if (v <= 20) return { text: "低", level: "ok" };
+  if (v <= 50) return { text: "中", level: "warn" };
+  return { text: "高", level: "fail" };
+}
+
+function formatAirportSuspicion(v) {
+  const n = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+  if (n <= 25) return { text: "低", level: "ok" };
+  if (n <= 55) return { text: "有一定概率", level: "warn" };
+  return { text: "偏高", level: "fail" };
+}
+
 /*************** 多源评分（本地模拟） ***************/
 function simulateMultiSourceScores(risk, abuseScore, ipApi) {
   const riskValue = Math.round(risk.riskValue || 0);
   const shared = Math.round(risk.sharedFeel || 0);
 
   let ippure = { text: "低风险（1）", level: "ok" };
-  if (riskValue > 35) ippure = { text: "中风险（" + Math.max(2, Math.round(riskValue / 20)) + "）", level: "warn" };
-  if (riskValue > 65) ippure = { text: "高风险（" + Math.max(4, Math.round(riskValue / 15)) + "）", level: "fail" };
+  if (risk.mobileBehaviorRisk >= 60) {
+    ippure = { text: "行为风险偏高（" + risk.mobileBehaviorRisk + "）", level: "fail" };
+  } else if (risk.mobileBehaviorRisk >= 35 || riskValue > 35) {
+    ippure = { text: "中风险（" + Math.max(2, Math.round((risk.mobileBehaviorRisk + riskValue) / 30)) + "）", level: "warn" };
+  }
 
   let scamalytics = { text: "低风险（0）", level: "ok" };
   const scamScore = Math.min(100, Math.round(abuseScore * 0.6 + riskValue * 0.25 + shared * 0.1));
@@ -351,7 +374,7 @@ function inferAsnType(ipApi, risk) {
   if (risk.isASNDatacenter || /cloud|hosting|host|server|vps|colo|idc|datacenter|data communications|eons|ovh|oracle|aws|azure|google|gcp|digitalocean|linode|vultr|aliyun|tencent cloud|huawei cloud/.test(all)) {
     return "云/机房ASN";
   }
-  if (/mobile|wireless|移动|cellular|verizon business/.test(all) && risk.networkCategory === "移动数据") {
+  if (/mobile|wireless|移动|cellular|rakuten mobile|rakuten/.test(all) && risk.networkCategory === "移动数据") {
     return "移动网络ASN";
   }
   if (/broadband|residential|cable|fiber|宽带|住宅|家庭/.test(all)) return "家宽ASN";
@@ -504,12 +527,9 @@ function analyzeRisk(ipApi, cz88, abuse) {
       suspiciousProxy = true;
       if (tags.indexOf("高度可疑") === -1) tags.push("高度可疑");
     }
-  } else {
-    // 仅在非移动网络时，数据缺失才明显降分
-    if (networkCategory !== "移动数据") {
-      score -= 6;
-      if (tags.indexOf("数据缺失") === -1) tags.push("数据缺失");
-    }
+  } else if (networkCategory !== "移动数据") {
+    score -= 6;
+    if (tags.indexOf("数据缺失") === -1) tags.push("数据缺失");
   }
 
   if (abuseScore > 0) {
@@ -691,10 +711,36 @@ function analyzeRisk(ipApi, cz88, abuse) {
     llmSummary = "更像机房宽带或数据中心";
   }
 
-  // 收紧：移动网络不轻易判可疑代理/黑名单可疑
+  // 新增：移动网络关联风险 / 机场嫌疑 / 行为风险
+  let associationRisk = 0;
+  let airportSuspicion = 0;
+  let mobileBehaviorRisk = 0;
+
+  if (networkCategory === "移动数据") {
+    associationRisk = 22 + Math.round(sharedFeel * 0.35);
+    airportSuspicion = 18 + Math.round(sharedFeel * 0.45);
+    mobileBehaviorRisk = 20 + Math.round(sharedFeel * 0.6) + Math.round((100 - nativeFeel) * 0.15);
+
+    if (ipApi.proxy) airportSuspicion += 20;
+    if (ipApi.hosting) airportSuspicion += 20;
+    if (abuseScore > 0) {
+      associationRisk += 10;
+      airportSuspicion += 10;
+      mobileBehaviorRisk += 12;
+    }
+  } else {
+    associationRisk = Math.round(sharedFeel * 0.4);
+    airportSuspicion = Math.round(sharedFeel * 0.3);
+    mobileBehaviorRisk = Math.round(sharedFeel * 0.35 + (100 - nativeFeel) * 0.15);
+  }
+
+  associationRisk = Math.max(0, Math.min(100, associationRisk));
+  airportSuspicion = Math.max(0, Math.min(100, airportSuspicion));
+  mobileBehaviorRisk = Math.max(0, Math.min(100, mobileBehaviorRisk));
+
   if (!blacklisted) {
     if (networkCategory === "移动数据") {
-      if (cloudService || ipApi.proxy === true || riskValue >= 45) {
+      if (cloudService || ipApi.proxy === true || riskValue >= 45 || abuseScore > 0) {
         blacklistSuspicious = true;
       }
     } else {
@@ -721,7 +767,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
       highRiskProxy = true;
     } else {
       if (networkCategory === "移动数据") {
-        if (cloudService || riskValue >= 45 || nativeFeel < 45) {
+        if (cloudService || ipApi.proxy === true || airportSuspicion >= 65) {
           suspiciousProxy = true;
         }
       } else {
@@ -732,7 +778,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     }
   }
 
-  if (networkCategory === "移动数据" && !cloudService && !ipApi.proxy && abuseScore === 0) {
+  if (networkCategory === "移动数据" && !cloudService && !ipApi.proxy && abuseScore === 0 && airportSuspicion < 65) {
     suspiciousProxy = false;
     if (!blacklisted) blacklistSuspicious = false;
   }
@@ -749,6 +795,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let conclusion = "普通可用";
   if (blacklisted || attackInvolved) {
     conclusion = "存在明确滥用或攻击风险，不建议用于敏感场景";
+  } else if (networkCategory === "移动数据" && airportSuspicion >= 60) {
+    conclusion = "移动网络整体不脏，但存在较明显关联风险或机场嫌疑，敏感场景谨慎";
   } else if (blacklistSuspicious) {
     conclusion = "整体风险不高，但存在黑名单或平台风控疑点，敏感场景谨慎";
   } else if (networkCategory === "移动数据" && !suspiciousProxy && !highRiskProxy) {
@@ -794,6 +842,9 @@ function analyzeRisk(ipApi, cz88, abuse) {
     llmSummary,
     abuseScore,
     totalReports,
+    associationRisk,
+    airportSuspicion,
+    mobileBehaviorRisk,
     tags: tags.length ? tags.join(" / ") : "无明显异常"
   };
 }
@@ -832,6 +883,9 @@ function fetchAll() {
           const asnType = inferAsnType(ipApi, risk);
           const ipTypeLabel = inferIpTypeLabel(risk, ipApi, cz88Data);
           const simulated = simulateMultiSourceScores(risk, risk.abuseScore, ipApi);
+          const associationRiskText = formatRiskBand(risk.associationRisk);
+          const airportSuspicionText = formatAirportSuspicion(risk.airportSuspicion);
+          const behaviorRiskText = formatRiskBand(risk.mobileBehaviorRisk);
 
           const checks = [
             { name: "Netflix", run: checkNetflix },
@@ -896,6 +950,12 @@ function fetchAll() {
             lines.push(line("共享感", sharedFeelText.text, sharedFeelText.level));
             lines.push(line("共享人数", shareCountText.text, shareCountText.level));
             lines.push(line("历史行为评分", historyBehaviorText.text, historyBehaviorText.level));
+            lines.push("");
+
+            lines.push("【行为 / 关联画像】");
+            lines.push(line("关联风险", associationRiskText.text, associationRiskText.level));
+            lines.push(line("机场嫌疑", airportSuspicionText.text, airportSuspicionText.level));
+            lines.push(line("行为风险", behaviorRiskText.text, behaviorRiskText.level));
             lines.push("");
 
             lines.push("【多源评分】");
