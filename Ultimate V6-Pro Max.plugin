@@ -1,0 +1,7 @@
+#!name=节点详情查询 Ultimate V6-Pro Max
+#!desc=IP信息 / 黑名单 / 假家宽 / 机场识别 / 多源评分 / 平台风控（ip-api + cz88 + AbuseIPDB）
+#!author=danielwu2020
+#!input=ABUSE_KEY
+
+[Script]
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_ultimate_v6_pro_max.js, argument="abuse={{{ABUSE_KEY}}}", tag=节点详情查询 Ultimate V6-Pro Max, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, timeout=15, enable=true
