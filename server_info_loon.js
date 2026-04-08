@@ -1,5 +1,5 @@
 /*************************************
- * 节点详情查询 Ultimate（最终完整优化版 / 严谨保守版 / 无额外API）
+ * 节点详情查询 Ultimate（最终完整优化版 / 展示细节拉满版 / 无额外API）
  * 数据源：
  * - ip-api
  * - cz88
@@ -16,7 +16,7 @@
  * - 隐私检测
  * - 黑名单 / 滥用
  * - 媒体检测 / 流媒体解锁
- * - 结论（保守严谨）
+ * - 结论（严谨保守）
  *************************************/
 
 const TIMEOUT = 15000;
@@ -146,8 +146,23 @@ function getHumanScoreMeta(score, cz88) {
   const rawType = String((cz88 && cz88.netWorkType) || "");
   const hasUsefulCz88 = !!rawType;
 
-  if (isNaN(n)) return { score: null, text: "-", suspicious: false, missing: true };
-  if (n === 0 && !hasUsefulCz88) return { score: null, text: "未知（数据不足）", suspicious: false, missing: true };
+  if (isNaN(n)) {
+    return {
+      score: null,
+      text: "未知（数据不足）",
+      suspicious: false,
+      missing: true
+    };
+  }
+
+  if (n === 0 && !hasUsefulCz88) {
+    return {
+      score: null,
+      text: "未知（数据不足）",
+      suspicious: false,
+      missing: true
+    };
+  }
 
   if (n >= 80) return { score: n, text: n + "（很像真人）", suspicious: false, missing: false };
   if (n >= 60) return { score: n, text: n + "（正常偏好）", suspicious: false, missing: false };
@@ -438,7 +453,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     networkCategory = "数据中心/服务器";
   }
 
-  let score = 88; // 更保守的基础分
+  let score = 88;
   const tags = [];
 
   let proxyExit = false;
@@ -522,7 +537,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (abuseScore >= 20) score -= 10;
   else if (abuseScore > 0) score -= 5;
 
-  if (!rawNetwork) score -= 10; // cz88未返回，明显降分
+  if (!rawNetwork) score -= 10;
 
   let riskValue = 8;
   let nativeFeel = 55;
@@ -667,14 +682,20 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   let llmSummary = "特征较均衡";
   if (!rawNetwork && humanMeta.missing) {
-    llmSummary = "数据不足，结果偏保守";
+    if (businessProbability >= residentialProbability && businessProbability >= datacenterProbability) {
+      llmSummary = "更像商业宽带或企业用途（数据不足，结果偏保守）";
+    } else if (datacenterProbability >= residentialProbability && datacenterProbability >= businessProbability) {
+      llmSummary = "更像机房宽带或数据中心（数据不足，结果偏保守）";
+    } else {
+      llmSummary = "偏家庭宽带（数据不足，结果偏保守）";
+    }
   } else if (residentialProbability >= businessProbability && residentialProbability >= datacenterProbability) {
     if (residentialProbability >= 70) llmSummary = "更像家庭宽带";
     else llmSummary = "偏家庭宽带";
   } else if (businessProbability >= residentialProbability && businessProbability >= datacenterProbability) {
-    llmSummary = "更像商业宽带或者企业用途";
+    llmSummary = "更像商业宽带或企业用途";
   } else {
-    llmSummary = "更像机房宽带或者数据中心";
+    llmSummary = "更像机房宽带或数据中心";
   }
 
   if (!blacklisted) {
@@ -826,12 +847,12 @@ function fetchAll() {
 
             lines.push("【网络检测】");
             lines.push("主类型：" + (risk.networkCategory || "-"));
-            lines.push("家宽：" + (risk.isResidential ? "是" : "否"));
+            lines.push("家宽底子：" + (risk.isResidential ? "是" : "否"));
             lines.push("数据中心：" + (risk.isDatacenter ? "是" : "否"));
             lines.push("移动网络：" + (risk.isMobile ? "是" : "否"));
             lines.push("ASN机房特征：" + (risk.isASNDatacenter ? "是" : "否"));
             lines.push("原始网络标记：" + ((cz88Data && cz88Data.netWorkType) || "未返回"));
-            lines.push("真人概率：" + (risk.humanMeta ? risk.humanMeta.text : "-"));
+            lines.push("真人概率：" + (risk.humanMeta ? risk.humanMeta.text : "未知（数据不足）"));
             lines.push("代理标记：" + (ipApi.proxy ? "是" : "否"));
             lines.push("托管标记：" + (ipApi.hosting ? "是" : "否"));
             lines.push("");
