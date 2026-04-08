@@ -1,9 +1,14 @@
 /*************************************
- * 节点详情查询 Ultimate（最终完整增强版 / 无额外API）
+ * 节点详情查询 Ultimate（终极融合算法版 / 细节优化完整版）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
+ *
+ * 设计原则：
+ * 1. 硬风险 与 平台关联风险分离
+ * 2. 黑名单状态只由硬信号触发
+ * 3. 移动网络不等于黑名单，但对苹果 / 谷歌 / 金融类更严
  *************************************/
 
 const TIMEOUT = 15000;
@@ -113,6 +118,10 @@ function hasAny(text, arr) {
     if (t.indexOf(arr[i]) !== -1) return true;
   }
   return false;
+}
+
+function uniquePush(arr, val) {
+  if (arr.indexOf(val) === -1) arr.push(val);
 }
 
 function icon(level) {
@@ -369,12 +378,6 @@ function formatProxyTier(risk) {
   return { text: "正常", level: "ok" };
 }
 
-function formatBlacklistTier(risk) {
-  if (risk.blacklisted) return { text: "是", level: "fail" };
-  if (risk.blacklistSuspicious) return { text: "可疑", level: "warn" };
-  return { text: "否", level: "ok" };
-}
-
 function formatShareCount(score) {
   const n = clamp(Math.round(Number(score) || 0), 0, 100);
   if (n <= 10) return { text: "1–10（低）", level: "ok" };
@@ -459,7 +462,7 @@ function inferAsnType(ipApi, risk) {
   }
 
   if (risk.networkCategory === "移动数据" && hasAny(all, [
-    "mobile", "wireless", "移动", "cellular", "rakuten mobile", "rakuten", "telecom mobile"
+    "mobile", "wireless", "移动", "cellular", "rakuten mobile", "rakuten", "telecom mobile", "t-mobile"
   ])) {
     return "移动网络ASN";
   }
@@ -573,54 +576,57 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let suspiciousProxy = false;
   let highRiskProxy = false;
   let cloudService = false;
+
+  // 只允许硬信号影响黑名单状态
   let blacklisted = false;
   let blacklistSuspicious = false;
   let abuseNode = false;
   let attackInvolved = false;
+  let anonymousVpnStyle = false;
+  let publicProxyStyle = false;
+  let torStyle = false;
 
   if (ipApi.proxy === true) {
     proxyExit = true;
-    highRiskProxy = true;
-    score -= 20;
-    tags.push("代理出口");
+    suspiciousProxy = true;
+    uniquePush(tags, "代理出口");
   }
 
   if (ipApi.hosting === true) {
     cloudService = true;
     proxyExit = true;
-    score -= 24;
-    tags.push("机房托管");
+    suspiciousProxy = true;
+    uniquePush(tags, "机房托管");
   }
 
   if (isASNDatacenter) {
     cloudService = true;
-    score -= 18;
-    tags.push("ASN机房特征");
+    suspiciousProxy = true;
+    uniquePush(tags, "ASN机房特征");
   }
 
   if (cloudProvider.hit) {
-    score -= 20;
     cloudService = true;
     suspiciousProxy = true;
-    tags.push("云厂商特征");
+    uniquePush(tags, "云厂商特征");
   }
 
   if (networkCategory === "住宅宽带") {
     score += 8;
+    uniquePush(tags, "住宅宽带");
   } else if (networkCategory === "商宽/企业宽带") {
     score -= 6;
-    suspiciousProxy = true;
-    tags.push("企业用途");
+    uniquePush(tags, "企业用途");
   } else if (networkCategory === "机房宽带嫌疑") {
     score -= 12;
     suspiciousProxy = true;
-    tags.push("机房宽带嫌疑");
+    uniquePush(tags, "机房宽带嫌疑");
   } else if (networkCategory === "移动数据") {
     score += 3;
-    tags.push("移动网络");
+    uniquePush(tags, "移动网络");
   } else if (networkCategory === "数据中心/服务器") {
     score -= 20;
-    tags.push("机房网络");
+    uniquePush(tags, "机房网络");
   }
 
   if (humanScore !== null) {
@@ -628,28 +634,32 @@ function analyzeRisk(ipApi, cz88, abuse) {
     else if (humanScore >= 60) score += 2;
     else if (humanScore >= 40) {
       score -= 8;
-      suspiciousProxy = true;
-      tags.push("真人概率偏低");
+      uniquePush(tags, "真人概率偏低");
     } else {
       score -= 15;
       suspiciousProxy = true;
-      tags.push("高度可疑");
+      uniquePush(tags, "高度可疑");
     }
   } else if (networkCategory !== "移动数据") {
     score -= 6;
-    tags.push("数据缺失");
+    uniquePush(tags, "数据缺失");
   }
 
   if (abuseScore > 0) {
     blacklisted = true;
     abuseNode = true;
     highRiskProxy = true;
-    tags.push("滥用记录");
+    uniquePush(tags, "滥用记录");
   }
 
   if (abuseScore >= 50 || totalReports >= 10) {
     attackInvolved = true;
-    tags.push("攻击风险");
+    uniquePush(tags, "攻击风险");
+  }
+
+  if (ipApi.proxy === true) {
+    anonymousVpnStyle = true;
+    publicProxyStyle = true;
   }
 
   if (abuseScore >= 80) score -= 25;
@@ -828,7 +838,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     fakeResidentialRisk >= 65
   ) {
     networkCategory = "商宽/企业宽带";
-    if (tags.indexOf("假家宽嫌疑") === -1) tags.push("假家宽嫌疑");
+    uniquePush(tags, "假家宽嫌疑");
   }
 
   let llmSummary = "特征较均衡";
@@ -848,6 +858,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     llmSummary = "更像机房宽带或数据中心";
   }
 
+  // 平台关联风险
   let associationRisk = 0;
   let airportSuspicion = 0;
   let mobileBehaviorRisk = 0;
@@ -860,8 +871,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     airportSuspicion = 18 + Math.round(sharedFeel * 0.45);
     mobileBehaviorRisk = 20 + Math.round(sharedFeel * 0.6) + Math.round((100 - nativeFeel) * 0.15);
 
-    if (ipApi.proxy) airportSuspicion += 20;
-    if (ipApi.hosting) airportSuspicion += 20;
     if (abuseScore > 0) {
       associationRisk += 10;
       airportSuspicion += 10;
@@ -918,78 +927,53 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (airportSuspicion >= 60) platformControlPressure += 12;
   if (cloudProvider.hit) platformControlPressure += 15;
   if (ipApi.proxy || ipApi.hosting) platformControlPressure += 20;
-  if (blacklistSuspicious) platformControlPressure += 10;
   platformControlPressure = clamp(platformControlPressure, 0, 100);
 
-  if (!blacklisted) {
-    if (networkCategory === "移动数据") {
-      if (
-        abuseScore > 0 ||
-        ipApi.proxy === true ||
-        ipApi.hosting === true ||
-        cloudService ||
-        platformRisk >= 65
-      ) {
-        blacklistSuspicious = true;
-      }
-    } else {
-      if (
-        abuseScore > 0 ||
-        riskValue >= 35 ||
-        suspiciousProxy ||
-        networkCategory === "商宽/企业宽带" ||
-        networkCategory === "机房宽带嫌疑" ||
-        cloudService
-      ) {
-        blacklistSuspicious = true;
-      }
-    }
-  }
-
-  if (!highRiskProxy) {
-    if (proxyExit) {
-      highRiskProxy = true;
-    } else if (blacklisted || abuseNode || attackInvolved) {
-      highRiskProxy = true;
-    } else if (riskValue >= 70) {
-      highRiskProxy = true;
-    } else {
-      if (networkCategory === "移动数据") {
-        if (
-          cloudService ||
-          ipApi.proxy === true ||
-          ipApi.hosting === true ||
-          airportSuspicion >= 70 ||
-          platformRisk >= 60 ||
-          abuseScore > 0
-        ) {
-          suspiciousProxy = true;
-        }
-      } else {
-        if (cloudService || suspiciousProxy || riskValue >= 35 || nativeFeel < 55) {
-          suspiciousProxy = true;
-        }
-      }
-    }
-  }
-
+  let platformAssociationLevel = "低";
   if (
     networkCategory === "移动数据" &&
-    !cloudService &&
-    !ipApi.proxy &&
-    !ipApi.hosting &&
-    abuseScore === 0 &&
-    airportSuspicion < 70 &&
-    platformRisk < 60
+    (associationRisk >= 35 || airportSuspicion >= 35 || platformRisk >= 40)
   ) {
+    platformAssociationLevel = "中";
+  }
+  if (
+    networkCategory === "移动数据" &&
+    (associationRisk >= 55 || airportSuspicion >= 60 || platformRisk >= 60)
+  ) {
+    platformAssociationLevel = "高";
+  }
+
+  // 仅硬信号触发黑名单状态
+  if (abuseScore > 0 || blacklisted || abuseNode || attackInvolved || ipApi.proxy === true || ipApi.hosting === true) {
+    blacklistSuspicious = true;
+  }
+
+  // 代理等级：移动网络不因为共享就自动当代理
+  if (proxyExit || blacklisted || attackInvolved || abuseScore >= 20) {
+    highRiskProxy = true;
+  } else if (
+    ipApi.proxy === true ||
+    ipApi.hosting === true ||
+    isASNDatacenter ||
+    cloudProvider.hit ||
+    networkCategory === "机房宽带嫌疑" ||
+    (networkCategory === "移动数据" && (airportSuspicion >= 70 || platformRisk >= 60))
+  ) {
+    suspiciousProxy = true;
+  } else {
     suspiciousProxy = false;
-    if (!blacklisted) blacklistSuspicious = false;
   }
 
   if (networkCategory === "住宅宽带") {
     if (!rawNetwork) score = Math.min(score, 84);
     if (humanMeta.missing) score = Math.min(score, 82);
     if (sharedFeel > 35) score = Math.min(score, 80);
+  }
+
+  // 移动网络别轻易给到过高分
+  if (networkCategory === "移动数据") {
+    if (associationRisk >= 35) score = Math.min(score, 88);
+    if (airportSuspicion >= 35) score = Math.min(score, 85);
   }
 
   score = clamp(score, 0, 100);
@@ -1000,6 +984,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (score >= 50) level = "一般";
   else level = "较差";
 
+  // 分平台建议
   let appleRisk = 0;
   let googleRisk = 0;
   let tiktokRisk = 0;
@@ -1017,8 +1002,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
   googleRisk += Math.round(sharedFeel * 0.25);
   googleRisk += Math.round(mobileBehaviorRisk * 0.25);
   if (suspiciousProxy) googleRisk += 20;
-  if (blacklistSuspicious) googleRisk += 15;
   if (networkCategory === "移动数据") googleRisk += 8;
+  if (platformRisk >= 50) googleRisk += 8;
 
   tiktokRisk += Math.round((100 - nativeFeel) * 0.2);
   tiktokRisk += Math.round(sharedFeel * 0.15);
@@ -1039,11 +1024,17 @@ function analyzeRisk(ipApi, cz88, abuse) {
   financeRisk += Math.round(associationRisk * 0.25);
   financeRisk += Math.round(airportSuspicion * 0.25);
   if (suspiciousProxy) financeRisk += 25;
-  if (blacklistSuspicious) financeRisk += 20;
   if (blacklisted) financeRisk += 40;
   if (networkCategory === "移动数据") financeRisk += 12;
-  if (networkCategory === "移动数据" && associationRisk >= 35) {
+
+  // 移动网络对苹果 / 谷歌 / 金融类更严
+  if (networkCategory === "移动数据") {
+    appleRisk = Math.max(appleRisk, 35);
+    googleRisk = Math.max(googleRisk, 35);
     financeRisk = Math.max(financeRisk, 45);
+  }
+  if (networkCategory === "移动数据" && (associationRisk >= 35 || airportSuspicion >= 35)) {
+    financeRisk = Math.max(financeRisk, 55);
   }
 
   appleRisk = clamp(appleRisk, 0, 100);
@@ -1060,29 +1051,42 @@ function analyzeRisk(ipApi, cz88, abuse) {
     finance: adviceByRisk(financeRisk, "可用", "谨慎", "不建议")
   };
 
-  let conclusion = "普通可用";
-  if (blacklisted || attackInvolved) {
-    conclusion = "存在明确滥用或攻击风险，不建议用于敏感场景";
-  } else if (networkCategory === "移动数据" && airportSuspicion >= 60) {
-    conclusion = "移动网络整体不脏，但存在较明显关联风险或机场嫌疑，敏感场景谨慎";
-  } else if (blacklistSuspicious) {
-    conclusion = "整体风险不高，但存在黑名单或平台风控疑点，敏感场景谨慎";
-  } else if (networkCategory === "移动数据" && !suspiciousProxy && !highRiskProxy) {
-    if (associationRisk >= 35 || airportSuspicion >= 35) {
-      conclusion = "偏干净移动网络，日常使用良好，但不建议按低关联独享住宅看待";
+  // 结论拆分
+  let hardRiskConclusion = "无明确黑名单/滥用风险";
+  if (blacklisted || abuseNode || attackInvolved) {
+    hardRiskConclusion = "存在明确滥用或黑名单风险";
+  } else if (ipApi.proxy === true || ipApi.hosting === true) {
+    hardRiskConclusion = "存在明确代理或托管风险";
+  }
+
+  let platformRiskConclusion = "平台关联压力低";
+  if (platformAssociationLevel === "中") {
+    platformRiskConclusion = "存在一定平台关联压力";
+  } else if (platformAssociationLevel === "高") {
+    platformRiskConclusion = "平台关联压力较高";
+  }
+
+  let finalConclusion = "整体可正常使用";
+  if (blacklisted || abuseNode || attackInvolved) {
+    finalConclusion = "存在明确硬风险，不建议用于敏感场景";
+  } else if (networkCategory === "移动数据") {
+    if (platformAssociationLevel === "高") {
+      finalConclusion = "移动网络整体不脏，但平台关联压力较高，敏感场景谨慎";
+    } else if (platformAssociationLevel === "中") {
+      finalConclusion = "偏干净移动网络，日常使用良好，但不建议按低关联独享住宅看待";
     } else {
-      conclusion = "偏干净移动网络，整体可正常使用";
+      finalConclusion = "偏干净移动网络，整体可正常使用";
     }
-  } else if (score >= 85 && networkCategory === "住宅宽带" && !proxyExit && !highRiskProxy) {
-    conclusion = "偏优质住宅，日常使用问题不大";
   } else if (networkCategory === "商宽/企业宽带") {
-    conclusion = "偏商宽/企业用途，普通使用可行，注册和主号场景谨慎";
+    finalConclusion = "偏商宽/企业用途，普通使用可行，注册和主号场景谨慎";
   } else if (networkCategory === "机房宽带嫌疑") {
-    conclusion = "存在机房宽带嫌疑，不建议按纯家宽对待";
-  } else if (highRiskProxy || networkCategory === "数据中心/服务器" || proxyExit) {
-    conclusion = "偏机房/代理出口，不建议用于敏感用途";
-  } else if (score >= 70) {
-    conclusion = "整体较稳，可正常使用";
+    finalConclusion = "存在机房宽带嫌疑，不建议按纯家宽对待";
+  } else if (networkCategory === "数据中心/服务器" || proxyExit) {
+    finalConclusion = "偏机房/代理出口，不建议用于敏感用途";
+  } else if (score >= 85 && networkCategory === "住宅宽带") {
+    finalConclusion = "偏优质住宅，日常使用问题不大";
+  } else {
+    finalConclusion = "整体较稳，可正常使用";
   }
 
   return {
@@ -1100,7 +1104,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
     blacklistSuspicious,
     abuseNode,
     attackInvolved,
-    conclusion,
+    anonymousVpnStyle,
+    publicProxyStyle,
+    torStyle,
+    hardRiskConclusion,
+    platformRiskConclusion,
+    finalConclusion,
     riskValue,
     nativeFeel,
     sharedFeel,
@@ -1132,6 +1141,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     platformControlPressure,
     dataCompleteness,
     dataCompletenessScore,
+    platformAssociationLevel,
     tags: tags.length ? Array.from(new Set(tags)).join(" / ") : "无明显异常"
   };
 }
@@ -1165,7 +1175,6 @@ function fetchAll() {
           const sharedFeelText = formatSharedFeel(risk.sharedFeel);
           const proxyTierText = formatProxyTier(risk);
           const historyBehaviorText = formatHistoryBehavior(risk.historyBehavior);
-          const blacklistTierText = formatBlacklistTier(risk);
           const shareCountText = formatShareCount(risk.shareCountScore);
           const asnType = inferAsnType(ipApi, risk);
           const ipTypeLabel = inferIpTypeLabel(risk, ipApi, cz88Data);
@@ -1257,6 +1266,7 @@ function fetchAll() {
             lines.push("");
 
             lines.push("【平台风控视角】");
+            lines.push("平台关联等级：" + risk.platformAssociationLevel);
             lines.push(line("平台识别风险", platformRiskText.text, platformRiskText.level));
             lines.push(line("VPN判定概率", vpnProbabilityText.text, vpnProbabilityText.level));
             lines.push(boolLine("严格风控库标记", risk.strictLibraryFlag));
@@ -1272,19 +1282,15 @@ function fetchAll() {
             lines.push(line("ipregistry风格", simulated.ipregistry.text, simulated.ipregistry.level));
             lines.push("");
 
-            lines.push("【隐私检测】");
-            lines.push(boolLine("代理出口", risk.proxyExit));
-            lines.push(line("代理等级", proxyTierText.text, proxyTierText.level));
-            lines.push(boolLine("可疑代理", risk.suspiciousProxy));
-            lines.push(boolLine("高风险代理", risk.highRiskProxy));
-            lines.push(boolLine("云服务", risk.cloudService));
-            lines.push("");
-
-            lines.push("【黑名单 / 滥用】");
-            lines.push(line("黑名单状态", blacklistTierText.text, blacklistTierText.level));
+            lines.push("【硬风险判定】");
+            lines.push(boolLine("匿名VPN风格", risk.anonymousVpnStyle));
+            lines.push(boolLine("机房代理风格", risk.cloudService || risk.isDatacenter || risk.isASNDatacenter));
+            lines.push(boolLine("公共代理风格", risk.publicProxyStyle));
             lines.push(boolLine("黑名单", risk.blacklisted));
             lines.push(boolLine("滥用节点", risk.abuseNode));
+            lines.push(boolLine("TOR节点风格", risk.torStyle));
             lines.push(boolLine("参与攻击", risk.attackInvolved));
+            lines.push(boolLine("云服务", risk.cloudService));
             if (!ABUSEIPDB_KEY) {
               lines.push("Abuse置信分：未启用");
               lines.push("滥用报告数：未启用");
@@ -1295,6 +1301,13 @@ function fetchAll() {
               lines.push("Abuse置信分：请求失败");
               lines.push("滥用报告数：请求失败");
             }
+            lines.push("");
+
+            lines.push("【隐私检测】");
+            lines.push(boolLine("代理出口", risk.proxyExit));
+            lines.push(line("代理等级", proxyTierText.text, proxyTierText.level));
+            lines.push(boolLine("可疑代理", risk.suspiciousProxy));
+            lines.push(boolLine("高风险代理", risk.highRiskProxy));
             lines.push("");
 
             lines.push("【分平台建议】");
@@ -1311,8 +1324,10 @@ function fetchAll() {
             }
             lines.push("");
 
-            lines.push("【结论】");
-            lines.push(risk.conclusion);
+            lines.push("【最终结论】");
+            lines.push("硬风险结论：" + risk.hardRiskConclusion);
+            lines.push("平台结论：" + risk.platformRiskConclusion);
+            lines.push("综合建议：" + risk.finalConclusion);
 
             done(lines.join("\n"));
           });
