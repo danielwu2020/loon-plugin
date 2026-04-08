@@ -1,5 +1,5 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版）
+ * 节点详情查询 Ultimate（完整细节优化版 - 补丁增强完整版）
  * 数据源：
  * - ip-api
  * - cz88
@@ -12,10 +12,12 @@
  * 4. 小型IDC / Hosting / Transit / Reseller 特征增强
  * 5. 平台风控、行为模型、综合结论更贴近实际
  * 6. AbuseIPDB 增加本地缓存，避免频繁请求
+ * 7. 流媒体 / 平台检测增强：Netflix / Disney+ / TikTok / YouTube / ChatGPT
  *************************************/
 
 const TIMEOUT = 15000;
 const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12小时
+const RESULT_CACHE_TTL = 10 * 60 * 1000;     // 10分钟整体验证缓存
 
 /*************** 参数读取 ***************/
 function getArgs() {
@@ -189,20 +191,17 @@ function getAbuseCacheKey(ip) {
   return "NODE_CHECK_ABUSE_CACHE_" + ip;
 }
 
+function getResultCacheKey(ip) {
+  return "NODE_CHECK_RESULT_CACHE_" + ip;
+}
+
 /*************** 主流运营商白名单 ***************/
 const MAJOR_ISP_KEYWORDS = [
-  // 美国
   "AT&T", "ATT", "AT&T Corp", "AT&T Enterprises", "Comcast", "Verizon", "T-Mobile",
   "Spectrum", "Charter", "Cox", "CenturyLink", "Lumen", "Frontier", "Windstream",
   "Optimum", "Altice", "Xfinity",
-
-  // 日本
   "NTT", "SoftBank", "KDDI", "Rakuten", "JCOM", "IIJ",
-
-  // 欧洲
   "Vodafone", "Orange", "Telekom", "Telefonica", "O2", "Bouygues", "Free Mobile",
-
-  // 其他
   "Singtel", "StarHub", "M1", "Telstra", "Optus", "AIS", "True", "dtac",
   "China Telecom", "China Unicom", "China Mobile", "CMHK", "PCCW", "HGC"
 ];
@@ -216,10 +215,10 @@ function isMajorISP(org, isp, asnOrg) {
 
 /*************** 云厂商 / Hosting 数据库 ***************/
 const CLOUD_PROVIDER_RULES = [
-  { name: "AWS", keys: ["amazon", "amazon technologies", "amazon data services", "aws", "ec2"] },
-  { name: "Google Cloud", keys: ["google cloud", "google llc", "gcp", "google"] },
-  { name: "Azure", keys: ["microsoft", "azure"] },
-  { name: "Oracle Cloud", keys: ["oracle", "oci", "oracle cloud"] },
+  { name: "AWS", keys: ["amazon technologies", "amazon data services", "aws", "ec2"] },
+  { name: "Google Cloud", keys: ["google cloud", "gcp"] },
+  { name: "Azure", keys: ["azure"] },
+  { name: "Oracle Cloud", keys: ["oracle cloud", "oracle", "oci"] },
   { name: "Cloudflare", keys: ["cloudflare"] },
   { name: "DigitalOcean", keys: ["digitalocean"] },
   { name: "Linode", keys: ["linode", "akamai connected cloud"] },
@@ -241,7 +240,7 @@ const SUSPICIOUS_TRANSIT_UPSTREAMS = [
   "telia", "telia carrier",
   "zayo", "pccw global",
   "ntt america", "level 3", "lumen",
-  "colo", "colo", "transit", "backbone"
+  "colo", "transit", "backbone"
 ];
 
 const HOSTING_RESELLER_KEYWORDS = [
@@ -267,6 +266,15 @@ function detectCloudProvider(ipApi, cz88) {
       }
     }
   }
+
+  // 补一个更谨慎的 Google / Microsoft 判断，减少普通 Google/微软组织误伤
+  if (/\bgoogle\b/i.test(text) && /\bcloud\b/i.test(text)) {
+    return { hit: true, name: "Google Cloud", keyword: "google + cloud" };
+  }
+  if (/\bmicrosoft\b/i.test(text) && /\bazure\b/i.test(text)) {
+    return { hit: true, name: "Azure", keyword: "microsoft + azure" };
+  }
+
   return { hit: false, name: "", keyword: "" };
 }
 
@@ -318,18 +326,70 @@ function checkAbuseIPDB(ip, cb) {
   );
 }
 
-/*************** 流媒体检测 ***************/
+/*************** 流媒体 / 平台检测 ***************/
 function checkNetflix(cb) {
+  const tests = [
+    { region: "US", id: "70143836" },
+    { region: "JP", id: "80018499" },
+    { region: "SG", id: "81215567" }
+  ];
+
+  let idx = 0;
+  let onlyOriginal = false;
+
+  function next() {
+    if (idx >= tests.length) {
+      if (onlyOriginal) return cb("仅自制剧", "warn");
+      return cb("不可用", "fail");
+    }
+
+    const item = tests[idx++];
+    httpGet(
+      {
+        url: "https://www.netflix.com/title/" + item.id,
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          "Accept-Language": "en"
+        }
+      },
+      function (err, resp) {
+        if (err || !resp) {
+          if (idx >= tests.length) return cb("检测失败", "fail");
+          return next();
+        }
+        const code = resp.status || resp.statusCode || 0;
+        if (code === 200) return cb("完整解锁（" + item.region + "）", "ok");
+        if (code === 404) {
+          onlyOriginal = true;
+          return next();
+        }
+        if (code === 403) return cb("被拒绝", "fail");
+        return next();
+      }
+    );
+  }
+
+  next();
+}
+
+function checkDisney(cb) {
   httpGet(
     {
-      url: "https://www.netflix.com/title/81215567",
-      headers: { "User-Agent": "Mozilla/5.0" }
+      url: "https://www.disneyplus.com/",
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en"
+      }
     },
-    function (err, resp) {
+    function (err, resp, data) {
       if (err || !resp) return cb("检测失败", "fail");
       const code = resp.status || resp.statusCode || 0;
-      if (code === 200) return cb("可用", "ok");
-      if (code === 404) return cb("仅自制剧", "warn");
+      const body = data || "";
+
+      if (code === 200 || code === 301 || code === 302) {
+        if (/not available in your region/i.test(body)) return cb("当前地区不可用", "fail");
+        return cb("可访问", "ok");
+      }
       if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
     }
@@ -367,10 +427,38 @@ function checkYouTube(cb) {
     },
     function (err, resp, data) {
       if (err || !resp || !data) return cb("检测失败", "fail");
-      const match = data.match(/"countryCode":"(.*?)"/);
-      if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
+      const body = data || "";
       const code = resp.status || resp.statusCode || 0;
+
+      const match = body.match(/"countryCode":"(.*?)"/) || body.match(/"GL":"(.*?)"/);
+      if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
+
+      if (/youtube premium is not available/i.test(body)) {
+        return cb("当前地区不可用", "warn");
+      }
+
       if (code === 200) return cb("可访问", "warn");
+      return cb("未知(" + code + ")", "warn");
+    }
+  );
+}
+
+function checkChatGPT(cb) {
+  httpGet(
+    {
+      url: "https://chat.openai.com/",
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en"
+      }
+    },
+    function (err, resp, data) {
+      if (err || !resp) return cb("检测失败", "fail");
+      const code = resp.status || resp.statusCode || 0;
+      const body = data || "";
+      if (code === 200 || code === 301 || code === 302) return cb("可访问", "ok");
+      if (/unsupported country/i.test(body)) return cb("地区限制", "fail");
+      if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
     }
   );
@@ -577,7 +665,7 @@ function inferAsnType(ipApi, risk) {
 
   if (risk.isASNDatacenter || hasAny(all, [
     "cloud", "hosting", "host", "server", "vps", "colo", "idc", "datacenter",
-    "oracle", "aws", "azure", "google", "gcp", "digitalocean", "linode", "vultr",
+    "oracle", "aws", "azure", "google cloud", "gcp", "digitalocean", "linode", "vultr",
     "aliyun", "tencent cloud", "huawei cloud"
   ])) {
     return "云/机房ASN";
@@ -603,6 +691,7 @@ function inferAsnType(ipApi, risk) {
 function inferIpTypeLabel(risk, ipApi, cz88) {
   if (risk.networkCategory === "数据中心/服务器") return "数据中心 / 服务器";
   if (risk.networkCategory === "机房宽带嫌疑") return "机房宽带嫌疑";
+  if (risk.networkCategory === "商宽 / 企业宽带") return "商宽 / 企业用途";
   if (risk.networkCategory === "商宽/企业宽带") return "商宽 / 企业用途";
   if (risk.networkCategory === "住宅宽带") return "住宅宽带";
   if (risk.networkCategory === "运营商ISP网络") return "运营商 ISP 网络";
@@ -658,7 +747,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     /(^|\s)as\d+/.test(asText) &&
     hasAny(allAsnText, [
       "cloud", "hosting", "host", "server", "vps", "colo", "idc", "datacenter",
-      "oracle", "aws", "azure", "google", "gcp", "digitalocean", "linode", "vultr",
+      "oracle", "aws", "azure", "google cloud", "gcp", "digitalocean", "linode", "vultr",
       "aliyun", "tencent cloud", "huawei cloud"
     ]);
 
@@ -1150,6 +1239,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     if (sharedFeel > 35) score = Math.min(score, 82);
   }
   if (networkCategory === "运营商移动网络" || networkCategory === "移动数据") {
+    if (platformAssociationLevel === "高") score = Math.min(score, 84);
     if (associationRisk >= 35) score = Math.min(score, 86);
     if (airportSuspicion >= 35) score = Math.min(score, 84);
   }
@@ -1372,6 +1462,13 @@ function fetchAll() {
       const ipApi = parseJSON(data1);
       if (!ipApi || !ipApi.query) return done("IP数据解析失败");
 
+      // 整体结果缓存，减少重复检测
+      const resultCacheKey = getResultCacheKey(ipApi.query);
+      const resultCache = readCache(resultCacheKey);
+      if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
+        return done(resultCache.data);
+      }
+
       const cz88Url = "https://www.cz88.net/api/cz88/ip/base?ip=" + ipApi.query;
       httpGet(cz88Url, function (err2, res2, data2) {
         let cz88Data = null;
@@ -1410,8 +1507,10 @@ function fetchAll() {
 
           const checks = [
             { name: "Netflix", run: checkNetflix },
+            { name: "Disney+", run: checkDisney },
             { name: "TikTok", run: checkTikTok },
-            { name: "YouTube", run: checkYouTube }
+            { name: "YouTube", run: checkYouTube },
+            { name: "ChatGPT", run: checkChatGPT }
           ];
 
           runChecks(checks, function (results) {
@@ -1507,10 +1606,13 @@ function fetchAll() {
             lines.push(line("浏览风险", browseRiskText.text, browseRiskText.level));
             lines.push("");
 
-            lines.push("【多源结果 / 模拟】");
+            lines.push("【真实来源结果】");
             lines.push(line("AbuseIPDB", abuseScoreText.text, abuseScoreText.level));
             lines.push(line("ip-api", ipapiScore.text, ipapiScore.level));
             lines.push(line("cz88", cz88Score.text, cz88Score.level));
+            lines.push("");
+
+            lines.push("【本地模拟结果（非真实API）】");
             lines.push(line("IPPure模拟", simulated.ippure.text, simulated.ippure.level));
             lines.push(line("Scamalytics模拟", simulated.scamalytics.text, simulated.scamalytics.level));
             lines.push(line("IP2Location模拟", simulated.ip2location.text, simulated.ip2location.level));
@@ -1556,7 +1658,7 @@ function fetchAll() {
             lines.push("金融类：" + risk.platformAdvice.finance + "（风险 " + risk.financeRisk + "）");
             lines.push("");
 
-            lines.push("【媒体检测 / 流媒体解锁】");
+            lines.push("【媒体检测 / 平台解锁】");
             for (let i = 0; i < results.length; i++) {
               lines.push(line(results[i].name, results[i].value, results[i].level));
             }
@@ -1567,7 +1669,9 @@ function fetchAll() {
             lines.push("平台结论：" + risk.platformRiskConclusion);
             lines.push("综合建议：" + risk.finalConclusion);
 
-            done(lines.join("\n"));
+            const finalMsg = lines.join("\n");
+            writeCache(resultCacheKey, finalMsg);
+            done(finalMsg);
           });
         });
       });
