@@ -1,5 +1,5 @@
 #!name=代理链路检测（修复版）
-#!desc=兼容Sub-Store远程+不再报没匹配到节点类型
+#!desc=NodeLinkCheck Fixed
 #!system=ios
 
 [Script]
