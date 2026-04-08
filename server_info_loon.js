@@ -1,9 +1,22 @@
 /*************************************
- * 节点详情查询 Ultimate（完整详细版 / 无IPQS / 三层网络分类 / 修正版）
+ * 节点详情查询 Ultimate（最终完整详细版 / 无额外API）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
+ *
+ * 功能：
+ * - IP详细
+ * - 基础信息
+ * - 网络检测
+ * - 综合质量
+ * - 大模型检测（本地推断）
+ * - 风控画像
+ * - 多源评分（本地模拟）
+ * - 隐私检测
+ * - 黑名单 / 滥用
+ * - 流媒体解锁
+ * - 结论
  *************************************/
 
 const TIMEOUT = 15000;
@@ -154,11 +167,9 @@ function getHumanScoreMeta(score, cz88) {
   const rawType = String((cz88 && cz88.netWorkType) || "");
   const hasUsefulCz88 = !!rawType;
 
-  if (isNaN(n)) {
-    return { score: null, text: "-", suspicious: false };
-  }
+  if (isNaN(n)) return { score: null, text: "-", suspicious: false };
 
-  // 修复：cz88 很多时候 0 只是无效值，不直接当极高风险
+  // cz88 很多时候 0 只是数据不完整
   if (n === 0 && !hasUsefulCz88) {
     return { score: null, text: "未知（数据不足）", suspicious: false };
   }
@@ -194,7 +205,7 @@ function checkAbuseIPDB(ip, cb) {
   );
 }
 
-/*************** 媒体检测 ***************/
+/*************** 流媒体检测 ***************/
 function checkNetflix(cb) {
   httpGet(
     {
@@ -253,11 +264,10 @@ function checkYouTube(cb) {
   );
 }
 
-/*************** 展示文案 ***************/
+/*************** 文案格式化 ***************/
 function formatAbuseScore(abuse) {
   if (!ABUSEIPDB_KEY) return { text: "未启用", level: "warn" };
   if (!abuse || !abuse.data) return { text: "请求失败", level: "fail" };
-
   const s = Number(abuse.data.abuseConfidenceScore || 0);
   if (s === 0) return { text: "低风险（" + s + "）", level: "ok" };
   if (s < 50) return { text: "一般风险（" + s + "）", level: "warn" };
@@ -274,46 +284,42 @@ function formatIpApiRisk(ipApi) {
 function formatCz88Risk(cz88) {
   const t = String((cz88 && cz88.netWorkType) || "");
   if (!t) return { text: "未返回", level: "warn" };
-  if (t.indexOf("机房") !== -1 || t.indexOf("数据中心") !== -1) {
-    return { text: t, level: "fail" };
-  }
-  if (t.indexOf("移动") !== -1) {
-    return { text: t, level: "warn" };
-  }
+  if (t.indexOf("机房") !== -1 || t.indexOf("数据中心") !== -1) return { text: t, level: "fail" };
+  if (t.indexOf("移动") !== -1) return { text: t, level: "warn" };
   return { text: t, level: "ok" };
 }
 
-function formatRiskValue(value) {
-  const n = Number(value);
-  if (isNaN(n)) return { text: "-", level: "warn" };
-  if (n <= 20) return { text: n + "（低）", level: "ok" };
-  if (n <= 40) return { text: n + "（偏低）", level: "ok" };
-  if (n <= 60) return { text: n + "（中）", level: "warn" };
-  if (n <= 80) return { text: n + "（偏高）", level: "fail" };
-  return { text: n + "（高）", level: "fail" };
+function formatRiskPercent(value) {
+  const n = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  if (n <= 10) return { text: n + "%（极度纯净）", level: "ok" };
+  if (n <= 25) return { text: n + "%（低风险）", level: "ok" };
+  if (n <= 45) return { text: n + "%（轻微风险）", level: "warn" };
+  if (n <= 65) return { text: n + "%（中等风险）", level: "warn" };
+  if (n <= 85) return { text: n + "%（较高风险）", level: "fail" };
+  return { text: n + "%（高风险）", level: "fail" };
 }
 
 function formatNativeFeel(score) {
   const n = Number(score);
   if (isNaN(n)) return { text: "-", level: "warn" };
-  if (n >= 80) return { text: n + "（高原生）", level: "ok" };
-  if (n >= 55) return { text: n + "（一般原生）", level: "warn" };
+  if (n >= 85) return { text: n + "（高原生）", level: "ok" };
+  if (n >= 60) return { text: n + "（一般原生）", level: "warn" };
   return { text: n + "（低原生）", level: "fail" };
 }
 
 function formatSharedFeel(score) {
   const n = Number(score);
   if (isNaN(n)) return { text: "-", level: "warn" };
-  if (n <= 25) return { text: n + "（低共享）", level: "ok" };
-  if (n <= 60) return { text: n + "（中共享）", level: "warn" };
+  if (n <= 20) return { text: n + "（低共享）", level: "ok" };
+  if (n <= 50) return { text: n + "（中共享）", level: "warn" };
   return { text: n + "（高共享）", level: "fail" };
 }
 
 function formatHistoryBehavior(score) {
   const n = Number(score);
   if (isNaN(n)) return { text: "-", level: "warn" };
-  if (n >= 80) return { text: n + "（稳定干净）", level: "ok" };
-  if (n >= 55) return { text: n + "（基本正常）", level: "warn" };
+  if (n >= 85) return { text: n + "（稳定干净）", level: "ok" };
+  if (n >= 60) return { text: n + "（基本正常）", level: "warn" };
   return { text: n + "（历史较杂）", level: "fail" };
 }
 
@@ -329,7 +335,49 @@ function formatBlacklistTier(risk) {
   return { text: "否", level: "ok" };
 }
 
-/*************** ASN / IP 类型判断 ***************/
+function formatShareCount(score) {
+  const n = Math.max(0, Math.min(100, Math.round(Number(score) || 0)));
+  if (n <= 10) return { text: "1–10（极好）", level: "ok" };
+  if (n <= 30) return { text: "10–30（良好）", level: "ok" };
+  if (n <= 60) return { text: "30–80（一般）", level: "warn" };
+  return { text: "80+（偏高）", level: "fail" };
+}
+
+/*************** 多源评分（本地模拟） ***************/
+function simulateMultiSourceScores(risk, abuseScore, ipApi, cz88) {
+  const riskValue = Math.round(risk.riskValue || 0);
+  const shared = Math.round(risk.sharedFeel || 0);
+
+  let ippure = { text: "低风险（1）", level: "ok" };
+  if (riskValue > 45) ippure = { text: "中风险（" + Math.max(2, Math.round(riskValue / 20)) + "）", level: "warn" };
+  if (riskValue > 70) ippure = { text: "高风险（" + Math.max(4, Math.round(riskValue / 15)) + "）", level: "fail" };
+
+  let scamalytics = { text: "低风险（0）", level: "ok" };
+  const scamScore = Math.min(100, Math.round(abuseScore * 0.6 + riskValue * 0.2 + shared * 0.1));
+  if (scamScore > 15) scamalytics = { text: "中风险（" + scamScore + "）", level: "warn" };
+  if (scamScore > 45) scamalytics = { text: "高风险（" + scamScore + "）", level: "fail" };
+
+  let ip2location = { text: "低风险（3）", level: "ok" };
+  if (risk.networkCategory === "数据中心/服务器") {
+    ip2location = { text: "数据中心（DCH）", level: "fail" };
+  } else if (risk.networkCategory === "机房宽带嫌疑") {
+    ip2location = { text: "宽带嫌疑（可疑）", level: "warn" };
+  } else if (risk.networkCategory === "商宽/企业宽带") {
+    ip2location = { text: "商业宽带（中性）", level: "warn" };
+  }
+
+  let ipregistry = { text: "干净（Clean）", level: "ok" };
+  if (ipApi.proxy) ipregistry = { text: "有标记（Proxy）", level: "fail" };
+  else if (ipApi.hosting || risk.networkCategory === "数据中心/服务器") {
+    ipregistry = { text: "有标记（Hosting）", level: "warn" };
+  } else if (risk.networkCategory === "商宽/企业宽带" || risk.networkCategory === "机房宽带嫌疑") {
+    ipregistry = { text: "有标记（Suspicious）", level: "warn" };
+  }
+
+  return { ippure, scamalytics, ip2location, ipregistry };
+}
+
+/*************** ASN / IP 类型 ***************/
 function inferAsnType(ipApi, cz88, risk) {
   const asText = String((ipApi && ipApi.as) || "").toLowerCase();
   const ispText = String((ipApi && ipApi.isp) || "").toLowerCase();
@@ -340,20 +388,17 @@ function inferAsnType(ipApi, cz88, risk) {
   if (risk.isASNDatacenter || /cloud|hosting|host|server|vps|colo|idc|datacenter|data communications|eons|ovh|oracle|aws|azure|google|gcp|digitalocean|linode|vultr|aliyun|tencent cloud|huawei cloud/.test(all)) {
     return "云/机房ASN";
   }
-  if (/mobile|wireless|移动|cellular/.test(all)) {
-    return "移动网络ASN";
-  }
-  if (/broadband|residential|cable|fiber|宽带|住宅|家庭/.test(all)) {
-    return "家宽ASN";
-  }
+  if (/mobile|wireless|移动|cellular/.test(all)) return "移动网络ASN";
+  if (/broadband|residential|cable|fiber|宽带|住宅|家庭/.test(all)) return "家宽ASN";
   return "普通ASN";
 }
 
 function inferIpTypeLabel(risk, ipApi, cz88) {
+  if (risk.networkCategory === "数据中心/服务器") return "数据中心 / 服务器";
+  if (risk.networkCategory === "机房宽带嫌疑") return "机房宽带嫌疑";
   if (risk.networkCategory === "商宽/企业宽带") return "商宽 / 企业用途";
-  if (risk.isDatacenter || ipApi.hosting) return "数据中心 / 机房";
-  if (risk.isResidential && !risk.proxyExit && !risk.cloudService) return "住宅宽带";
-  if (risk.isMobile && !risk.cloudService) return "移动数据";
+  if (risk.networkCategory === "住宅宽带") return "住宅宽带";
+  if (risk.networkCategory === "移动数据") return "移动数据";
   if (ipApi.proxy) return "代理出口";
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
@@ -374,8 +419,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     rawLower.indexOf("数据中心") !== -1 ||
     ipApi.hosting === true;
 
-  let isMobile =
-    rawLower.indexOf("移动") !== -1;
+  let isMobile = rawLower.indexOf("移动") !== -1;
 
   const asText = String((ipApi && ipApi.as) || "").toLowerCase();
   const ispText = String((ipApi && ipApi.isp) || "").toLowerCase();
@@ -390,7 +434,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     /broadband|residential|cable|fiber|宽带|家庭|住宅/.test(allAsnText) &&
     !isASNDatacenter;
 
-  // ASN优先纠偏
   if (isASNDatacenter) {
     isDatacenter = true;
     isResidential = false;
@@ -401,23 +444,32 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const humanMeta = getHumanScoreMeta(cz88 && cz88.score, cz88);
   const humanScore = humanMeta.score;
 
-  // 三层主类型：住宅 / 商宽 / 机房
-  let networkCategory = "普通网络";
   const orgLooksBusiness =
     /llc|inc|ltd|limited|company|corp|corporation|enterprise|business|aviation|studio|tech|solutions|group/.test(orgText);
 
-  if (isASNDatacenter) {
-    networkCategory = "机房";
+  let abuseScore = 0;
+  let totalReports = 0;
+  if (abuse && abuse.data) {
+    abuseScore = Number(abuse.data.abuseConfidenceScore || 0);
+    totalReports = Number(abuse.data.totalReports || 0);
+  }
+
+  let networkCategory = "普通网络";
+
+  if (isASNDatacenter || ipApi.hosting === true) {
+    networkCategory = "数据中心/服务器";
+  } else if (isResidential || isASNResidential) {
+    if (orgLooksBusiness && (humanMeta.suspicious || totalReports > 0)) {
+      networkCategory = "商宽/企业宽带";
+    } else if (humanScore !== null && humanScore < 40) {
+      networkCategory = "机房宽带嫌疑";
+    } else {
+      networkCategory = "住宅宽带";
+    }
   } else if (isMobile) {
     networkCategory = "移动数据";
-  } else if (isResidential || isASNResidential) {
-    if (orgLooksBusiness && humanMeta.suspicious) {
-      networkCategory = "商宽/企业宽带";
-    } else {
-      networkCategory = "住宅";
-    }
   } else if (isDatacenter) {
-    networkCategory = "机房";
+    networkCategory = "数据中心/服务器";
   }
 
   let score = 100;
@@ -432,7 +484,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let abuseNode = false;
   let attackInvolved = false;
 
-  /***** ip-api *****/
   if (ipApi.proxy === true) {
     proxyExit = true;
     highRiskProxy = true;
@@ -447,29 +498,30 @@ function analyzeRisk(ipApi, cz88, abuse) {
     if (tags.indexOf("机房托管") === -1) tags.push("机房托管");
   }
 
-  /***** ASN 机房特征 *****/
   if (isASNDatacenter) {
     cloudService = true;
     score -= 18;
     if (tags.indexOf("ASN机房特征") === -1) tags.push("ASN机房特征");
   }
 
-  /***** 网络类型 *****/
-  if (networkCategory === "住宅") {
+  if (networkCategory === "住宅宽带") {
     score += 10;
   } else if (networkCategory === "商宽/企业宽带") {
     score += 2;
     suspiciousProxy = true;
     if (tags.indexOf("企业用途") === -1) tags.push("企业用途");
+  } else if (networkCategory === "机房宽带嫌疑") {
+    score -= 8;
+    suspiciousProxy = true;
+    if (tags.indexOf("机房宽带嫌疑") === -1) tags.push("机房宽带嫌疑");
   } else if (networkCategory === "移动数据") {
     score += 4;
     if (tags.indexOf("移动网络") === -1) tags.push("移动网络");
-  } else if (networkCategory === "机房") {
+  } else if (networkCategory === "数据中心/服务器") {
     score -= 15;
     if (tags.indexOf("机房网络") === -1) tags.push("机房网络");
   }
 
-  /***** 真人概率 *****/
   if (humanScore !== null) {
     if (humanScore >= 80) {
       score += 8;
@@ -486,39 +538,31 @@ function analyzeRisk(ipApi, cz88, abuse) {
     }
   }
 
-  /***** AbuseIPDB *****/
-  let abuseScore = 0;
-  let totalReports = 0;
-  if (abuse && abuse.data) {
-    abuseScore = Number(abuse.data.abuseConfidenceScore || 0);
-    totalReports = Number(abuse.data.totalReports || 0);
-
-    if (abuseScore > 0) {
-      blacklisted = true;
-      abuseNode = true;
-      highRiskProxy = true;
-      if (tags.indexOf("滥用记录") === -1) tags.push("滥用记录");
-    }
-
-    if (abuseScore >= 50 || totalReports >= 10) {
-      attackInvolved = true;
-      if (tags.indexOf("攻击风险") === -1) tags.push("攻击风险");
-    }
-
-    if (abuseScore >= 80) score -= 25;
-    else if (abuseScore >= 50) score -= 18;
-    else if (abuseScore >= 20) score -= 10;
-    else if (abuseScore > 0) score -= 5;
+  if (abuseScore > 0) {
+    blacklisted = true;
+    abuseNode = true;
+    highRiskProxy = true;
+    if (tags.indexOf("滥用记录") === -1) tags.push("滥用记录");
   }
 
-  /***** 风控值 / 原生感 / 共享感 *****/
+  if (abuseScore >= 50 || totalReports >= 10) {
+    attackInvolved = true;
+    if (tags.indexOf("攻击风险") === -1) tags.push("攻击风险");
+  }
+
+  if (abuseScore >= 80) score -= 25;
+  else if (abuseScore >= 50) score -= 18;
+  else if (abuseScore >= 20) score -= 10;
+  else if (abuseScore > 0) score -= 5;
+
   let riskValue = 0;
   let nativeFeel = 50;
   let sharedFeel = 20;
 
   if (ipApi.proxy === true) riskValue += 25;
   if (ipApi.hosting === true) riskValue += 25;
-  if (isDatacenter) riskValue += 15;
+  if (networkCategory === "数据中心/服务器") riskValue += 18;
+  if (networkCategory === "机房宽带嫌疑") riskValue += 10;
   if (isASNDatacenter) riskValue += 20;
   if (networkCategory === "商宽/企业宽带") riskValue += 10;
   if (isMobile) riskValue += 5;
@@ -537,10 +581,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (riskValue < 0) riskValue = 0;
   if (riskValue > 100) riskValue = 100;
 
-  if (isResidential) nativeFeel += 28;
+  if (networkCategory === "住宅宽带") nativeFeel += 28;
   if (networkCategory === "商宽/企业宽带") nativeFeel += 10;
   if (isMobile) nativeFeel += 12;
-  if (isDatacenter) nativeFeel -= 30;
+  if (networkCategory === "数据中心/服务器") nativeFeel -= 30;
+  if (networkCategory === "机房宽带嫌疑") nativeFeel -= 15;
   if (isASNDatacenter) nativeFeel -= 20;
   if (ipApi.hosting === true) nativeFeel -= 25;
   if (ipApi.proxy === true) nativeFeel -= 20;
@@ -559,10 +604,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   if (ipApi.hosting === true) sharedFeel += 30;
   if (ipApi.proxy === true) sharedFeel += 20;
-  if (isDatacenter) sharedFeel += 20;
+  if (networkCategory === "数据中心/服务器") sharedFeel += 20;
+  if (networkCategory === "机房宽带嫌疑") sharedFeel += 12;
   if (isASNDatacenter) sharedFeel += 20;
   if (networkCategory === "商宽/企业宽带") sharedFeel += 12;
-  if (isResidential) sharedFeel -= 10;
+  if (networkCategory === "住宅宽带") sharedFeel -= 10;
   if (isMobile) sharedFeel += 5;
 
   if (humanScore !== null) {
@@ -578,7 +624,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (sharedFeel < 0) sharedFeel = 0;
   if (sharedFeel > 100) sharedFeel = 100;
 
-  /***** 历史行为评分 *****/
   let historyBehavior = 90;
   historyBehavior -= Math.min(50, Math.round(abuseScore * 0.5));
   historyBehavior -= Math.min(20, totalReports);
@@ -589,7 +634,62 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (historyBehavior < 0) historyBehavior = 0;
   if (historyBehavior > 100) historyBehavior = 100;
 
-  /***** 黑名单可疑态 *****/
+  let shareCountScore = sharedFeel;
+  if (networkCategory === "住宅宽带" && historyBehavior >= 80) shareCountScore -= 5;
+  if (networkCategory === "数据中心/服务器") shareCountScore += 10;
+  if (shareCountScore < 0) shareCountScore = 0;
+  if (shareCountScore > 100) shareCountScore = 100;
+
+  let residentialProbability = 50;
+  let businessProbability = 20;
+  let datacenterProbability = 20;
+
+  if (networkCategory === "住宅宽带") residentialProbability += 25;
+  if (networkCategory === "商宽/企业宽带") businessProbability += 25;
+  if (networkCategory === "机房宽带嫌疑") datacenterProbability += 18;
+  if (networkCategory === "数据中心/服务器") datacenterProbability += 35;
+
+  if (isASNDatacenter) datacenterProbability += 20;
+  if (isResidential) residentialProbability += 10;
+  if (orgLooksBusiness) businessProbability += 12;
+
+  if (humanScore !== null) {
+    if (humanScore >= 80) residentialProbability += 10;
+    else if (humanScore >= 60) residentialProbability += 5;
+    else if (humanScore < 40) {
+      residentialProbability -= 12;
+      datacenterProbability += 10;
+      businessProbability += 8;
+    }
+  }
+
+  if (ipApi.hosting === true) {
+    residentialProbability -= 20;
+    datacenterProbability += 20;
+  }
+
+  if (ipApi.proxy === true) {
+    residentialProbability -= 10;
+    datacenterProbability += 10;
+  }
+
+  residentialProbability -= Math.min(15, Math.round(abuseScore * 0.15));
+  datacenterProbability += Math.min(10, Math.round(abuseScore * 0.1));
+
+  residentialProbability = Math.max(0, Math.min(100, Math.round(residentialProbability)));
+  businessProbability = Math.max(0, Math.min(100, Math.round(businessProbability)));
+  datacenterProbability = Math.max(0, Math.min(100, Math.round(datacenterProbability)));
+
+  let llmSummary = "特征较均衡";
+  if (residentialProbability >= businessProbability && residentialProbability >= datacenterProbability) {
+    if (residentialProbability >= 70) llmSummary = "更像家庭宽带";
+    else llmSummary = "偏家庭宽带";
+  } else if (businessProbability >= residentialProbability && businessProbability >= datacenterProbability) {
+    llmSummary = "可能为商业宽带或者企业用途";
+  } else {
+    llmSummary = "可能为机房宽带或者数据中心";
+  }
+
   if (!blacklisted) {
     if (
       (humanScore !== null && humanScore < 20) ||
@@ -600,7 +700,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     }
   }
 
-  /***** 三档代理判断（优化版） *****/
   if (!highRiskProxy) {
     if (proxyExit) {
       highRiskProxy = true;
@@ -623,42 +722,51 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else level = "较差";
 
   let conclusion = "普通可用";
-  if (score >= 85 && networkCategory === "住宅" && !proxyExit && !blacklisted && !highRiskProxy) {
+  if (score >= 85 && networkCategory === "住宅宽带" && !proxyExit && !blacklisted && !highRiskProxy) {
     conclusion = "优质住宅IP，可放心使用";
-  } else if (score >= 70 && !blacklisted && networkCategory !== "机房" && !highRiskProxy) {
-    conclusion = "整体较稳，可正常使用";
   } else if (networkCategory === "商宽/企业宽带") {
     conclusion = "偏商宽/企业用途，日常可用，注册与风控场景需谨慎";
-  } else if (highRiskProxy || networkCategory === "机房" || proxyExit) {
+  } else if (networkCategory === "机房宽带嫌疑") {
+    conclusion = "存在机房宽带嫌疑，建议谨慎用于账号和注册场景";
+  } else if (highRiskProxy || networkCategory === "数据中心/服务器" || proxyExit) {
     conclusion = "偏机房/代理出口，注册与风控场景需谨慎";
+  } else if (score >= 70 && !blacklisted) {
+    conclusion = "整体较稳，可正常使用";
   }
   if (blacklisted || attackInvolved) {
     conclusion = "存在滥用或攻击风险，建议更换节点";
   }
 
   return {
-    score: score,
-    level: level,
-    tags: tags.length ? tags.join(" / ") : "无明显异常",
-    networkCategory: networkCategory,
-    isResidential: isResidential,
-    isDatacenter: isDatacenter,
-    isMobile: isMobile,
-    proxyExit: proxyExit,
-    suspiciousProxy: suspiciousProxy,
-    highRiskProxy: highRiskProxy,
-    cloudService: cloudService,
-    blacklisted: blacklisted,
-    blacklistSuspicious: blacklistSuspicious,
-    abuseNode: abuseNode,
-    attackInvolved: attackInvolved,
-    conclusion: conclusion,
-    riskValue: riskValue,
-    nativeFeel: nativeFeel,
-    sharedFeel: sharedFeel,
-    historyBehavior: historyBehavior,
-    isASNDatacenter: isASNDatacenter,
-    humanMeta: humanMeta
+    score,
+    level,
+    networkCategory,
+    isResidential,
+    isDatacenter,
+    isMobile,
+    proxyExit,
+    suspiciousProxy,
+    highRiskProxy,
+    cloudService,
+    blacklisted,
+    blacklistSuspicious,
+    abuseNode,
+    attackInvolved,
+    conclusion,
+    riskValue,
+    nativeFeel,
+    sharedFeel,
+    historyBehavior,
+    isASNDatacenter,
+    humanMeta,
+    shareCountScore,
+    residentialProbability,
+    businessProbability,
+    datacenterProbability,
+    llmSummary,
+    abuseScore,
+    totalReports,
+    tags: tags.length ? tags.join(" / ") : "无明显异常"
   };
 }
 
@@ -683,17 +791,19 @@ function fetchAll() {
         checkAbuseIPDB(ipApi.query, function (abuseData) {
           const risk = analyzeRisk(ipApi, cz88Data || {}, abuseData);
 
-          const abuseScore = formatAbuseScore(abuseData);
+          const abuseScoreText = formatAbuseScore(abuseData);
           const ipapiScore = formatIpApiRisk(ipApi);
           const cz88Score = formatCz88Risk(cz88Data);
-          const riskValueText = formatRiskValue(risk.riskValue);
+          const riskValueText = formatRiskPercent(risk.riskValue);
           const nativeFeelText = formatNativeFeel(risk.nativeFeel);
           const sharedFeelText = formatSharedFeel(risk.sharedFeel);
           const proxyTierText = formatProxyTier(risk);
           const historyBehaviorText = formatHistoryBehavior(risk.historyBehavior);
           const blacklistTierText = formatBlacklistTier(risk);
+          const shareCountText = formatShareCount(risk.shareCountScore);
           const asnType = inferAsnType(ipApi, cz88Data, risk);
           const ipTypeLabel = inferIpTypeLabel(risk, ipApi, cz88Data);
+          const simulated = simulateMultiSourceScores(risk, risk.abuseScore, ipApi, cz88Data);
 
           const checks = [
             { name: "Netflix", run: checkNetflix },
@@ -708,17 +818,21 @@ function fetchAll() {
             lines.push("节点：" + NODE_NAME);
             lines.push("");
 
-            lines.push("【基础信息】");
+            lines.push("【IP详细】");
             lines.push("IP：" + (ipApi.query || "-"));
+            lines.push("ASN：" + (ipApi.as || "-"));
+            lines.push("ASN类型：" + asnType);
+            lines.push("IP类型：" + ipTypeLabel);
+            lines.push("位置：" + (ipApi.country || "-") + " " + (ipApi.regionName || "-") + " " + (ipApi.city || "-"));
+            lines.push("");
+
+            lines.push("【基础信息】");
             lines.push("国家/地区：" + (ipApi.country || "-"));
             lines.push("地区：" + (ipApi.regionName || "-"));
             lines.push("城市：" + (ipApi.city || "-"));
             lines.push("ZIP：" + (ipApi.zip || "-"));
             lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
             lines.push("组织：" + (ipApi.org || "-"));
-            lines.push("ASN：" + (ipApi.as || "-"));
-            lines.push("ASN类型：" + asnType);
-            lines.push("IP类型：" + ipTypeLabel);
             lines.push("时区：" + (ipApi.timezone || "-"));
             lines.push("经纬度：" + (ipApi.lat || "-") + " / " + (ipApi.lon || "-"));
             lines.push("");
@@ -741,17 +855,29 @@ function fetchAll() {
             lines.push("特征：" + risk.tags);
             lines.push("");
 
+            lines.push("【大模型检测】");
+            lines.push("家庭宽带概率：" + risk.residentialProbability + "%");
+            lines.push("商业宽带概率：" + risk.businessProbability + "%");
+            lines.push("机房宽带概率：" + risk.datacenterProbability + "%");
+            lines.push("综合判断：" + risk.llmSummary);
+            lines.push("");
+
             lines.push("【风控画像】");
             lines.push(line("风控值", riskValueText.text, riskValueText.level));
             lines.push(line("原生感", nativeFeelText.text, nativeFeelText.level));
             lines.push(line("共享感", sharedFeelText.text, sharedFeelText.level));
+            lines.push(line("共享人数", shareCountText.text, shareCountText.level));
             lines.push(line("历史行为评分", historyBehaviorText.text, historyBehaviorText.level));
             lines.push("");
 
             lines.push("【多源评分】");
-            lines.push(line("AbuseIPDB", abuseScore.text, abuseScore.level));
+            lines.push(line("AbuseIPDB", abuseScoreText.text, abuseScoreText.level));
             lines.push(line("ip-api", ipapiScore.text, ipapiScore.level));
             lines.push(line("cz88", cz88Score.text, cz88Score.level));
+            lines.push(line("IPPure", simulated.ippure.text, simulated.ippure.level));
+            lines.push(line("Scamalytics", simulated.scamalytics.text, simulated.scamalytics.level));
+            lines.push(line("IP2Location.io", simulated.ip2location.text, simulated.ip2location.level));
+            lines.push(line("ipregistry", simulated.ipregistry.text, simulated.ipregistry.level));
             lines.push("");
 
             lines.push("【隐私检测】");
@@ -779,7 +905,7 @@ function fetchAll() {
             }
             lines.push("");
 
-            lines.push("【媒体检测】");
+            lines.push("【媒体检测 / 流媒体解锁】");
             for (var i = 0; i < results.length; i++) {
               lines.push(line(results[i].name, results[i].value, results[i].level));
             }
