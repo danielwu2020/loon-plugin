@@ -1,22 +1,9 @@
 /*************************************
- * 节点详情查询 Ultimate（最终完整优化版 / 展示细节拉满版 / 无额外API）
+ * 节点详情查询 Ultimate（完整优化细节版 / 无额外API）
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
- *
- * 功能：
- * - IP详细
- * - 基础信息
- * - 网络检测
- * - 综合质量
- * - 大模型检测（本地推断）
- * - 风控画像
- * - 多源评分（本地模拟）
- * - 隐私检测
- * - 黑名单 / 滥用
- * - 媒体检测 / 流媒体解锁
- * - 结论（严谨保守）
  *************************************/
 
 const TIMEOUT = 15000;
@@ -72,7 +59,9 @@ function getNodeName() {
     if (typeof $environment !== "undefined" && $environment.params) {
       if (typeof $environment.params === "string") return $environment.params;
       if ($environment.params.node) return $environment.params.node;
-      if ($environment.params.nodeInfo && $environment.params.nodeInfo.name) return $environment.params.nodeInfo.name;
+      if ($environment.params.nodeInfo && $environment.params.nodeInfo.name) {
+        return $environment.params.nodeInfo.name;
+      }
     }
     if (typeof $loon !== "undefined" && $loon.node) return $loon.node;
   } catch (e) {}
@@ -84,7 +73,9 @@ function getNodeParam() {
     if (typeof $environment !== "undefined" && $environment.params) {
       if (typeof $environment.params === "string") return $environment.params;
       if ($environment.params.node) return $environment.params.node;
-      if ($environment.params.nodeInfo && $environment.params.nodeInfo.name) return $environment.params.nodeInfo.name;
+      if ($environment.params.nodeInfo && $environment.params.nodeInfo.name) {
+        return $environment.params.nodeInfo.name;
+      }
     }
     if (typeof $loon !== "undefined" && $loon.node) return $loon.node;
   } catch (e) {}
@@ -94,7 +85,7 @@ function getNodeParam() {
 const NODE_NAME = getNodeName();
 const NODE_PARAM = getNodeParam();
 
-/*************** 工具 ***************/
+/*************** 通用工具 ***************/
 function httpGet(target, callback) {
   const opts = typeof target === "string" ? { url: target } : target;
   if (!opts.timeout) opts.timeout = TIMEOUT;
@@ -147,21 +138,11 @@ function getHumanScoreMeta(score, cz88) {
   const hasUsefulCz88 = !!rawType;
 
   if (isNaN(n)) {
-    return {
-      score: null,
-      text: "未知（数据不足）",
-      suspicious: false,
-      missing: true
-    };
+    return { score: null, text: "未知（数据不足）", suspicious: false, missing: true };
   }
 
   if (n === 0 && !hasUsefulCz88) {
-    return {
-      score: null,
-      text: "未知（数据不足）",
-      suspicious: false,
-      missing: true
-    };
+    return { score: null, text: "未知（数据不足）", suspicious: false, missing: true };
   }
 
   if (n >= 80) return { score: n, text: n + "（很像真人）", suspicious: false, missing: false };
@@ -195,7 +176,7 @@ function checkAbuseIPDB(ip, cb) {
   );
 }
 
-/*************** 媒体检测 ***************/
+/*************** 媒体检测 / 流媒体 ***************/
 function checkNetflix(cb) {
   httpGet(
     { url: "https://www.netflix.com/title/81215567", headers: { "User-Agent": "Mozilla/5.0" } },
@@ -345,6 +326,8 @@ function simulateMultiSourceScores(risk, abuseScore, ipApi) {
     ip2location = { text: "宽带嫌疑（可疑）", level: "warn" };
   } else if (risk.networkCategory === "商宽/企业宽带") {
     ip2location = { text: "商业宽带（中性）", level: "warn" };
+  } else if (risk.networkCategory === "移动数据") {
+    ip2location = { text: "移动网络（MOB）", level: "ok" };
   }
 
   let ipregistry = { text: "干净（Clean）", level: "ok" };
@@ -368,7 +351,9 @@ function inferAsnType(ipApi, risk) {
   if (risk.isASNDatacenter || /cloud|hosting|host|server|vps|colo|idc|datacenter|data communications|eons|ovh|oracle|aws|azure|google|gcp|digitalocean|linode|vultr|aliyun|tencent cloud|huawei cloud/.test(all)) {
     return "云/机房ASN";
   }
-  if (/mobile|wireless|移动|cellular/.test(all)) return "移动网络ASN";
+  if (/mobile|wireless|移动|cellular|verizon business/.test(all) && risk.networkCategory === "移动数据") {
+    return "移动网络ASN";
+  }
   if (/broadband|residential|cable|fiber|宽带|住宅|家庭/.test(all)) return "家宽ASN";
   return "普通ASN";
 }
@@ -399,7 +384,10 @@ function analyzeRisk(ipApi, cz88, abuse) {
     rawLower.indexOf("数据中心") !== -1 ||
     ipApi.hosting === true;
 
-  let isMobile = rawLower.indexOf("移动") !== -1;
+  let isMobile =
+    rawLower.indexOf("移动") !== -1 ||
+    rawLower.indexOf("蜂窝") !== -1 ||
+    rawLower.indexOf("mobile") !== -1;
 
   const asText = String((ipApi && ipApi.as) || "").toLowerCase();
   const ispText = String((ipApi && ipApi.isp) || "").toLowerCase();
@@ -412,12 +400,13 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   const isASNResidential =
     /broadband|residential|cable|fiber|宽带|家庭|住宅/.test(allAsnText) &&
-    !isASNDatacenter;
+    !isASNDatacenter &&
+    !isMobile;
 
   if (isASNDatacenter) {
     isDatacenter = true;
     isResidential = false;
-  } else if (isASNResidential && !isDatacenter) {
+  } else if (isASNResidential && !isDatacenter && !isMobile) {
     isResidential = true;
   }
 
@@ -435,7 +424,9 @@ function analyzeRisk(ipApi, cz88, abuse) {
   }
 
   let networkCategory = "普通网络";
-  if (isASNDatacenter || ipApi.hosting === true) {
+  if (isMobile) {
+    networkCategory = "移动数据";
+  } else if (isASNDatacenter || ipApi.hosting === true) {
     networkCategory = "数据中心/服务器";
   } else if (isResidential || isASNResidential) {
     if (!rawNetwork && orgLooksBusiness) {
@@ -447,8 +438,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     } else {
       networkCategory = "住宅宽带";
     }
-  } else if (isMobile) {
-    networkCategory = "移动数据";
   } else if (isDatacenter) {
     networkCategory = "数据中心/服务器";
   }
@@ -496,7 +485,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     suspiciousProxy = true;
     if (tags.indexOf("机房宽带嫌疑") === -1) tags.push("机房宽带嫌疑");
   } else if (networkCategory === "移动数据") {
-    score += 2;
+    score += 3;
     if (tags.indexOf("移动网络") === -1) tags.push("移动网络");
   } else if (networkCategory === "数据中心/服务器") {
     score -= 20;
@@ -516,8 +505,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
       if (tags.indexOf("高度可疑") === -1) tags.push("高度可疑");
     }
   } else {
-    score -= 6;
-    if (tags.indexOf("数据缺失") === -1) tags.push("数据缺失");
+    // 仅在非移动网络时，数据缺失才明显降分
+    if (networkCategory !== "移动数据") {
+      score -= 6;
+      if (tags.indexOf("数据缺失") === -1) tags.push("数据缺失");
+    }
   }
 
   if (abuseScore > 0) {
@@ -537,7 +529,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (abuseScore >= 20) score -= 10;
   else if (abuseScore > 0) score -= 5;
 
-  if (!rawNetwork) score -= 10;
+  if (!rawNetwork && networkCategory !== "移动数据") score -= 10;
 
   let riskValue = 8;
   let nativeFeel = 55;
@@ -549,28 +541,28 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "机房宽带嫌疑") riskValue += 12;
   if (isASNDatacenter) riskValue += 20;
   if (networkCategory === "商宽/企业宽带") riskValue += 12;
-  if (isMobile) riskValue += 4;
+  if (networkCategory === "移动数据") riskValue += 4;
 
   if (humanScore !== null) {
     if (humanScore >= 80) riskValue -= 8;
     else if (humanScore >= 60) riskValue -= 2;
     else if (humanScore >= 40) riskValue += 8;
     else riskValue += 16;
-  } else {
+  } else if (networkCategory !== "移动数据") {
     riskValue += 8;
   }
 
   riskValue += Math.min(30, Math.round(abuseScore * 0.3));
   if (totalReports >= 10) riskValue += 10;
   else if (totalReports > 0) riskValue += 4;
-  if (!rawNetwork) riskValue += 8;
+  if (!rawNetwork && networkCategory !== "移动数据") riskValue += 8;
 
   if (riskValue < 0) riskValue = 0;
   if (riskValue > 100) riskValue = 100;
 
   if (networkCategory === "住宅宽带") nativeFeel += 22;
   if (networkCategory === "商宽/企业宽带") nativeFeel += 4;
-  if (isMobile) nativeFeel += 10;
+  if (networkCategory === "移动数据") nativeFeel += 10;
   if (networkCategory === "数据中心/服务器") nativeFeel -= 28;
   if (networkCategory === "机房宽带嫌疑") nativeFeel -= 18;
   if (isASNDatacenter) nativeFeel -= 18;
@@ -582,12 +574,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
     else if (humanScore >= 60) nativeFeel += 6;
     else if (humanScore >= 40) nativeFeel -= 8;
     else nativeFeel -= 18;
-  } else {
+  } else if (networkCategory !== "移动数据") {
     nativeFeel -= 8;
   }
 
   nativeFeel -= Math.min(15, Math.round(abuseScore * 0.15));
-  if (!rawNetwork) nativeFeel -= 8;
+  if (!rawNetwork && networkCategory !== "移动数据") nativeFeel -= 8;
 
   if (nativeFeel < 0) nativeFeel = 0;
   if (nativeFeel > 100) nativeFeel = 100;
@@ -599,20 +591,20 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (isASNDatacenter) sharedFeel += 18;
   if (networkCategory === "商宽/企业宽带") sharedFeel += 10;
   if (networkCategory === "住宅宽带") sharedFeel -= 8;
-  if (isMobile) sharedFeel += 5;
+  if (networkCategory === "移动数据") sharedFeel += 3;
 
   if (humanScore !== null) {
     if (humanScore >= 80) sharedFeel -= 6;
     else if (humanScore >= 60) sharedFeel -= 2;
     else if (humanScore >= 40) sharedFeel += 8;
     else sharedFeel += 12;
-  } else {
+  } else if (networkCategory !== "移动数据") {
     sharedFeel += 6;
   }
 
   sharedFeel += Math.min(20, Math.round(abuseScore * 0.2));
   if (totalReports >= 10) sharedFeel += 10;
-  if (!rawNetwork) sharedFeel += 8;
+  if (!rawNetwork && networkCategory !== "移动数据") sharedFeel += 8;
 
   if (sharedFeel < 0) sharedFeel = 0;
   if (sharedFeel > 100) sharedFeel = 100;
@@ -624,7 +616,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (ipApi.hosting === true) historyBehavior -= 8;
   if (isASNDatacenter) historyBehavior -= 8;
   if (humanScore !== null && humanScore < 40) historyBehavior -= 8;
-  if (!rawNetwork) historyBehavior -= 10;
+  if (!rawNetwork && networkCategory !== "移动数据") historyBehavior -= 10;
   if (historyBehavior < 0) historyBehavior = 0;
   if (historyBehavior > 100) historyBehavior = 100;
 
@@ -642,10 +634,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "商宽/企业宽带") businessProbability += 22;
   if (networkCategory === "机房宽带嫌疑") datacenterProbability += 18;
   if (networkCategory === "数据中心/服务器") datacenterProbability += 30;
+  if (networkCategory === "移动数据") residentialProbability += 4;
 
   if (isASNDatacenter) datacenterProbability += 18;
   if (isResidential) residentialProbability += 8;
-  if (orgLooksBusiness) businessProbability += 12;
+  if (orgLooksBusiness && networkCategory !== "移动数据") businessProbability += 12;
 
   if (humanScore !== null) {
     if (humanScore >= 80) residentialProbability += 8;
@@ -667,7 +660,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     datacenterProbability += 8;
   }
 
-  if (!rawNetwork) {
+  if (!rawNetwork && networkCategory !== "移动数据") {
     residentialProbability -= 14;
     businessProbability += 8;
     datacenterProbability += 8;
@@ -681,7 +674,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   datacenterProbability = Math.max(0, Math.min(100, Math.round(datacenterProbability)));
 
   let llmSummary = "特征较均衡";
-  if (!rawNetwork && humanMeta.missing) {
+  if (!rawNetwork && humanMeta.missing && networkCategory !== "移动数据") {
     if (businessProbability >= residentialProbability && businessProbability >= datacenterProbability) {
       llmSummary = "更像商业宽带或企业用途（数据不足，结果偏保守）";
     } else if (datacenterProbability >= residentialProbability && datacenterProbability >= businessProbability) {
@@ -698,25 +691,50 @@ function analyzeRisk(ipApi, cz88, abuse) {
     llmSummary = "更像机房宽带或数据中心";
   }
 
+  // 收紧：移动网络不轻易判可疑代理/黑名单可疑
   if (!blacklisted) {
-    if (
-      !rawNetwork ||
-      humanMeta.missing ||
-      networkCategory === "商宽/企业宽带" ||
-      networkCategory === "机房宽带嫌疑" ||
-      cloudService ||
-      suspiciousProxy ||
-      riskValue >= 20
-    ) {
-      blacklistSuspicious = true;
+    if (networkCategory === "移动数据") {
+      if (cloudService || ipApi.proxy === true || riskValue >= 45) {
+        blacklistSuspicious = true;
+      }
+    } else {
+      if (
+        !rawNetwork ||
+        humanMeta.missing ||
+        networkCategory === "商宽/企业宽带" ||
+        networkCategory === "机房宽带嫌疑" ||
+        cloudService ||
+        suspiciousProxy ||
+        riskValue >= 20
+      ) {
+        blacklistSuspicious = true;
+      }
     }
   }
 
   if (!highRiskProxy) {
-    if (proxyExit) highRiskProxy = true;
-    else if (blacklisted || abuseNode || attackInvolved) highRiskProxy = true;
-    else if (riskValue >= 70) highRiskProxy = true;
-    else if (cloudService || suspiciousProxy || riskValue >= 35 || nativeFeel < 55) suspiciousProxy = true;
+    if (proxyExit) {
+      highRiskProxy = true;
+    } else if (blacklisted || abuseNode || attackInvolved) {
+      highRiskProxy = true;
+    } else if (riskValue >= 70) {
+      highRiskProxy = true;
+    } else {
+      if (networkCategory === "移动数据") {
+        if (cloudService || riskValue >= 45 || nativeFeel < 45) {
+          suspiciousProxy = true;
+        }
+      } else {
+        if (cloudService || suspiciousProxy || riskValue >= 35 || nativeFeel < 55) {
+          suspiciousProxy = true;
+        }
+      }
+    }
+  }
+
+  if (networkCategory === "移动数据" && !cloudService && !ipApi.proxy && abuseScore === 0) {
+    suspiciousProxy = false;
+    if (!blacklisted) blacklistSuspicious = false;
   }
 
   if (score > 100) score = 100;
@@ -733,6 +751,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
     conclusion = "存在明确滥用或攻击风险，不建议用于敏感场景";
   } else if (blacklistSuspicious) {
     conclusion = "整体风险不高，但存在黑名单或平台风控疑点，敏感场景谨慎";
+  } else if (networkCategory === "移动数据" && !suspiciousProxy && !highRiskProxy) {
+    conclusion = "偏干净移动网络，整体可正常使用";
   } else if (score >= 85 && networkCategory === "住宅宽带" && !proxyExit && !highRiskProxy) {
     conclusion = "偏优质住宅，日常使用问题不大";
   } else if (networkCategory === "商宽/企业宽带") {
