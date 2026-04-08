@@ -1,5 +1,5 @@
 #!name=代理链路检测（修复版）
-#!desc=兼容远程 Sub-Store
+#!desc=兼容远程Sub-Store
 #!system=ios
 
 [Script]
