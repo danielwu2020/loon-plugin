@@ -1506,25 +1506,6 @@ function inferIpTypeLabel(risk, ipApi, cz88) {
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
 }
-risk.networkCategory === "机房宽带嫌疑" ||
-      risk.networkCategory === "ISP底子 / 共享嫌疑"
-    ) &&
-    risk.sharedFeel <= 70
-  ) {
-    return {
-      label: "🟠 小型IDC / 共享专线嫌疑",
-      level: "midbad",
-      desc: "底子不一定很脏，但共享、池化、机场化或轻机房痕迹明显，敏感用途不建议"
-    };
-  }
-
-  return {
-    label: "🔴 垃圾机房 / 高风险 IDC",
-    level: "bad",
-    desc: "共享密度高、机房/云特征明显，更像机场池、批量代理池或高风险IDC"
-  };
-}
-
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
