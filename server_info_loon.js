@@ -1,20 +1,20 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.98
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.99
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.98 精修整合版重点：
- * 1. 修复 ZIP 显示 bug
- * 2. ASN 机房识别语义进一步收紧，避免“有 AS 号就像机房”
- * 3. Netflix 检测不再把 404 粗暴解释为“仅自制”
- * 4. Disney / TikTok / YouTube / ChatGPT 展示口径进一步保守化
- * 5. 共享型 ISP 对移动网络做降权，减少误伤
- * 6. 本地模拟结果展示改为“拟合估计”，避免误导成真实 API
- * 7. 保持 1.97 的整体判断框架，同时修正文案与逻辑口径
+ * 1.99 精修完整版重点：
+ * 1. Netflix 404 改为“不确定样本”，不再与强封锁等价
+ * 2. 流媒体检测改为并行执行，整体速度更快
+ * 3. 结果缓存 Key 增加版本号，避免升级后吃旧缓存
+ * 4. ZIP 显示统一兜底为 "-"
+ * 5. icon(level) 明确支持 fail / neutral
+ * 6. 保持 1.98 的整体风控框架，同时修正部分文案和检测口径
  *************************************/
 
+const SCRIPT_VERSION = "1.99";
 const TIMEOUT = 15000;
 const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12小时
 const RESULT_CACHE_TTL = 10 * 60 * 1000;     // 10分钟整体验证缓存
@@ -197,7 +197,7 @@ function matchHostingLikeOrg(text) {
 }
 
 /**
- * 1.98 精修：
+ * 1.99 延续 1.98：
  * ASN机房判断不允许 hosting/datacenter/idc/vps 单词单独触发
  * 改为：强品牌直判 + 通用词(core) + infra 组合命中
  */
@@ -237,7 +237,9 @@ function icon(level) {
   if (level === "ok") return "🟢";
   if (level === "warn") return "🟡";
   if (level === "midbad") return "🟠";
-  return "🔴";
+  if (level === "fail") return "🔴";
+  if (level === "neutral") return "⚪️";
+  return "⚪️";
 }
 
 function line(name, value, level) {
@@ -254,23 +256,48 @@ function neutralBoolLine(name, boolValue) {
 
 function done(msg) {
   $done({
-    title: "节点详情查询 Ultimate",
+    title: "节点详情查询 Ultimate " + SCRIPT_VERSION,
     message: msg
   });
 }
 
-function runChecks(checks, callback) {
-  const results = [];
-  let index = 0;
-  function next() {
-    if (index >= checks.length) return callback(results);
-    const item = checks[index++];
-    item.run(function (value, level) {
-      results.push({ name: item.name, value: value, level: level });
-      next();
-    });
+/**
+ * 1.99：并行执行检测
+ */
+function runChecksParallel(checks, callback) {
+  if (!checks || !checks.length) return callback([]);
+
+  const results = new Array(checks.length);
+  let finished = 0;
+  let called = false;
+
+  function finishOnce() {
+    if (called) return;
+    if (finished >= checks.length) {
+      called = true;
+      callback(results);
+    }
   }
-  next();
+
+  checks.forEach(function (item, idx) {
+    let settled = false;
+
+    function settle(value, level) {
+      if (settled) return;
+      settled = true;
+      results[idx] = { name: item.name, value: value, level: level };
+      finished++;
+      finishOnce();
+    }
+
+    try {
+      item.run(function (value, level) {
+        settle(value, level);
+      });
+    } catch (e) {
+      settle("检测异常", "fail");
+    }
+  });
 }
 
 /*************** 缓存 ***************/
@@ -307,6 +334,7 @@ function getResultCacheKeyByMeta(ipApi) {
   const hosting = ipApi && ipApi.hosting ? "1" : "0";
 
   return "NODE_CHECK_RESULT_CACHE_" +
+    SCRIPT_VERSION + "_" +
     encodeURIComponent(NODE_NAME || "default") + "_" +
     encodeURIComponent(ip) + "_" +
     encodeURIComponent(asn) + "_" +
@@ -565,11 +593,15 @@ function checkNetflix(cb) {
   ];
 
   let idx = 0;
-  let blocked = 0;
+  let strongBlocked = 0;
+  let uncertainBlocked = 0;
+  let successRegion = "";
 
   function next() {
     if (idx >= tests.length) {
-      if (blocked >= tests.length) return cb("样本均不可访问", "fail");
+      if (successRegion) return cb("样本可访问（" + successRegion + "）", "ok");
+      if (strongBlocked >= tests.length) return cb("样本均受限", "fail");
+      if (strongBlocked + uncertainBlocked >= tests.length) return cb("样本均未明确通过（结果不确定）", "warn");
       return cb("部分样本失败（未确认完整解锁）", "warn");
     }
 
@@ -585,21 +617,28 @@ function checkNetflix(cb) {
       },
       function (err, resp) {
         if (err || !resp) {
-          blocked++;
+          uncertainBlocked++;
           return next();
         }
 
         const code = resp.status || resp.statusCode || 0;
 
         if (code === 200) {
-          return cb("样本可访问（" + item.region + "）", "ok");
-        }
-
-        if (code === 403 || code === 404) {
-          blocked++;
+          successRegion = item.region;
           return next();
         }
 
+        if (code === 403) {
+          strongBlocked++;
+          return next();
+        }
+
+        if (code === 404) {
+          uncertainBlocked++;
+          return next();
+        }
+
+        uncertainBlocked++;
         return next();
       }
     );
@@ -812,7 +851,7 @@ function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
 }
 
 /**
- * 1.98 精修：
+ * 1.99：
  * 专线 / business / enterprise 只有在共享感、原生低、平台风险高等背景下才弱加分
  * 不再直接粗暴抬高共享ISP评分
  * 对移动网络额外降权，减少误伤
@@ -1384,10 +1423,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const orgText = lower(ipApi && ipApi.org);
   const allAsnText = asText + " " + ispText + " " + orgText;
 
-  /**
-   * 1.98 精修：
-   * 云厂商品牌命中 与 云厂商机房化倾向拆开
-   */
   const cloudHitOnly = cloudProvider.hit;
 
   const cloudInfraSignal =
@@ -1399,11 +1434,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
       matchASNDatacenterText(allAsnText)
     );
 
-  /**
-   * 1.98 精修：
-   * 不再使用 “有 AS 号 + 文本命中” 这种几乎恒成立的前置条件
-   * 直接改为“云基础设施信号”或“明显 ASN/ORG/ISP 机房语义且非主流 ISP / 非住宅底子”
-   */
   const isASNResidential =
     hasAnySafe(allAsnText, ["broadband", "residential", "cable", "fiber", "ftth", "家庭", "住宅", "家宽", "dsl"]) &&
     !isMobile &&
@@ -2544,11 +2574,12 @@ function fetchAll() {
             }
           ];
 
-          runChecks(checks, function (results) {
+          runChecksParallel(checks, function (results) {
             const lines = [];
 
             lines.push("【节点信息】");
             lines.push("节点：" + NODE_NAME);
+            lines.push("版本：" + SCRIPT_VERSION);
             lines.push("");
 
             lines.push("【IP详细】");
@@ -2563,7 +2594,7 @@ function fetchAll() {
             lines.push("国家/地区：" + (ipApi.country || "-"));
             lines.push("地区：" + (ipApi.regionName || "-"));
             lines.push("城市：" + (ipApi.city || "-"));
-            lines.push("ZIP：" + (ipApi.zip || ""));
+            lines.push("ZIP：" + (ipApi.zip || "-"));
             lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
             lines.push("组织：" + (ipApi.org || "-"));
             lines.push("时区：" + (ipApi.timezone || "-"));
