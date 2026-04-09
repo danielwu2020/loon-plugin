@@ -1341,6 +1341,7 @@ function inferIpTypeLabel(risk, ipApi, cz88) {
   if (ipApi.proxy) return "代理出口";
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
+}
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
