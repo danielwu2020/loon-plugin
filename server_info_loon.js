@@ -1,17 +1,17 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.92
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.93
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.92 数据库增强完整版重点：
- * 1. ASN数据库分层：优质企业线 / 中性商宽 / 小型IDC / 高危IDC
- * 2. ISP底子 / 企业线 / 小型IDC / 垃圾机房拆分更细
- * 3. 平台建议实战化：Apple / Google / TikTok / Telegram / Instagram / 金融类
- * 4. 新增 IG（Instagram）平台建议
- * 5. 结果缓存按 IP + 节点名，避免串缓存
- * 6. Netflix / Disney+ / TikTok / YouTube / ChatGPT 检测文案更严谨
+ * 1.93 数据库严谨修正版重点：
+ * 1. 短关键词安全匹配，降低 ATT / BT / Oi / TIM / O2 / AIS / M1 等误判
+ * 2. ASN数据库收紧泛词，避免 business / fiber / network / communications 误加白
+ * 3. Oracle Cloud / OCI 识别修正，避免短词误命中
+ * 4. ChatGPT 检测切换 chatgpt.com，兼容性更稳
+ * 5. Netflix 检测文案更严谨，避免“全解锁”式误导
+ * 6. 结果缓存按 节点名 + IP + ASN + 国家码，减少串缓存
  *************************************/
 
 const TIMEOUT = 15000;
@@ -117,10 +117,33 @@ function lower(v) {
   return String(v || "").toLowerCase();
 }
 
+function escapeRegExp(str) {
+  return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeKeywordMatch(text, keyword) {
+  const t = String(text || "").toLowerCase();
+  const k = String(keyword || "").toLowerCase().trim();
+  if (!k) return false;
+
+  if (k.length <= 3) {
+    return new RegExp("(^|[^a-z0-9])" + escapeRegExp(k) + "([^a-z0-9]|$)", "i").test(t);
+  }
+  return t.indexOf(k) !== -1;
+}
+
 function hasAny(text, arr) {
   const t = lower(text);
   for (let i = 0; i < arr.length; i++) {
     if (t.indexOf(lower(arr[i])) !== -1) return true;
+  }
+  return false;
+}
+
+function hasAnySafe(text, arr) {
+  const t = String(text || "").toLowerCase();
+  for (let i = 0; i < arr.length; i++) {
+    if (safeKeywordMatch(t, arr[i])) return true;
   }
   return false;
 }
@@ -191,26 +214,44 @@ function getAbuseCacheKey(ip) {
   return "NODE_CHECK_ABUSE_CACHE_" + ip;
 }
 
-function getResultCacheKey(ip) {
-  return "NODE_CHECK_RESULT_CACHE_" + ip + "_" + encodeURIComponent(NODE_NAME || "default");
+function getResultCacheKeyByMeta(ipApi) {
+  const ip = ipApi && ipApi.query ? ipApi.query : "unknown";
+  const asn = ipApi && ipApi.as ? ipApi.as : "unknown_as";
+  const cc = ipApi && ipApi.countryCode ? ipApi.countryCode : "xx";
+  return "NODE_CHECK_RESULT_CACHE_" +
+    encodeURIComponent(NODE_NAME || "default") + "_" +
+    encodeURIComponent(ip) + "_" +
+    encodeURIComponent(asn) + "_" +
+    encodeURIComponent(cc);
 }
 
 /*************** 主流运营商白名单 ***************/
 const MAJOR_ISP_KEYWORDS = [
-  "AT&T", "ATT", "Comcast", "Verizon", "T-Mobile", "Spectrum", "Charter", "Cox",
+  "AT&T", "Comcast", "Verizon", "T-Mobile", "Spectrum", "Charter", "Cox",
   "CenturyLink", "Lumen", "Frontier", "Windstream", "Optimum", "Altice", "Xfinity",
   "NTT", "SoftBank", "KDDI", "Rakuten", "JCOM", "IIJ",
-  "Vodafone", "Orange", "Telekom", "Telefonica", "O2", "Bouygues", "Free Mobile",
-  "Singtel", "StarHub", "M1", "Telstra", "Optus", "AIS", "True", "dtac",
+  "Vodafone", "Orange", "Telekom", "Telefonica", "Bouygues", "Free Mobile",
+  "Singtel", "StarHub", "Telstra", "Optus", "dtac",
   "China Telecom", "China Unicom", "China Mobile", "CMHK", "PCCW", "HGC",
-  "SUPERLOOP", "Exetel", "Swisscom", "Virgin Media", "BT", "Claro", "Oi", "Vivo", "TIM"
+  "SUPERLOOP", "Exetel", "Swisscom", "Virgin Media", "Claro", "Vivo"
+];
+
+const MAJOR_ISP_SHORT_KEYWORDS = [
+  "ATT", "BT", "Oi", "TIM", "M1", "O2", "AIS", "True"
 ];
 
 function isMajorISP(org, isp, asnOrg) {
   const str = [org, isp, asnOrg].join(" ").toLowerCase();
-  return MAJOR_ISP_KEYWORDS.some(function (name) {
-    return str.indexOf(name.toLowerCase()) !== -1;
-  });
+
+  for (let i = 0; i < MAJOR_ISP_KEYWORDS.length; i++) {
+    if (safeKeywordMatch(str, MAJOR_ISP_KEYWORDS[i])) return true;
+  }
+
+  for (let j = 0; j < MAJOR_ISP_SHORT_KEYWORDS.length; j++) {
+    if (safeKeywordMatch(str, MAJOR_ISP_SHORT_KEYWORDS[j])) return true;
+  }
+
+  return false;
 }
 
 /*************** ASN 数据库增强 ***************/
@@ -220,8 +261,7 @@ const ASN_DB = {
     "business fiber", "enterprise fiber"
   ],
   neutralBusiness: [
-    "exetel", "superloop business", "business broadband", "enterprise", "business", "commercial internet",
-    "fiber", "broadband", "communications", "network"
+    "exetel", "superloop business", "business broadband", "commercial internet"
   ],
   smallIdc: [
     "colo", "colocation", "hosting", "server", "idc", "datacenter", "data center",
@@ -241,7 +281,7 @@ const CLOUD_PROVIDER_RULES = [
   { name: "AWS", keys: ["amazon technologies", "amazon data services", "ec2", "amazon aws"] },
   { name: "Google Cloud", keys: ["google cloud", "google llc cloud", "gcp"] },
   { name: "Azure", keys: ["microsoft azure", "azure cloud"] },
-  { name: "Oracle Cloud", keys: ["oracle cloud", "oracle oci", "oci"] },
+  { name: "Oracle Cloud", keys: ["oracle cloud", "oracle oci"] },
   { name: "Cloudflare", keys: ["cloudflare"] },
   { name: "DigitalOcean", keys: ["digitalocean"] },
   { name: "Linode", keys: ["linode", "akamai connected cloud"] },
@@ -284,7 +324,7 @@ function detectCloudProvider(ipApi, cz88) {
   for (let i = 0; i < CLOUD_PROVIDER_RULES.length; i++) {
     const item = CLOUD_PROVIDER_RULES[i];
     for (let j = 0; j < item.keys.length; j++) {
-      if (text.indexOf(item.keys[j].toLowerCase()) !== -1) {
+      if (safeKeywordMatch(text, item.keys[j])) {
         return { hit: true, name: item.name, keyword: item.keys[j] };
       }
     }
@@ -295,6 +335,9 @@ function detectCloudProvider(ipApi, cz88) {
   }
   if (/\bmicrosoft\b/i.test(text) && /\bazure\b/i.test(text)) {
     return { hit: true, name: "Azure", keyword: "microsoft + azure" };
+  }
+  if (/\boracle\b/i.test(text) && /\boci\b/i.test(text)) {
+    return { hit: true, name: "Oracle Cloud", keyword: "oracle + oci" };
   }
 
   return { hit: false, name: "", keyword: "" };
@@ -402,7 +445,7 @@ function checkNetflix(cb) {
 
   function next() {
     if (idx >= tests.length) {
-      if (onlyOriginal) return cb("仅自制剧（近似）", "warn");
+      if (onlyOriginal) return cb("仅样本自制可用（近似）", "warn");
       return cb("不可用", "fail");
     }
 
@@ -422,7 +465,7 @@ function checkNetflix(cb) {
         }
         const code = resp.status || resp.statusCode || 0;
 
-        if (code === 200) return cb("非自制内容可访问（近似 / " + item.region + "）", "ok");
+        if (code === 200) return cb("检测样本可访问（疑似非自制可用 / " + item.region + "）", "ok");
         if (code === 404) {
           onlyOriginal = true;
           return next();
@@ -510,7 +553,7 @@ function checkYouTube(cb) {
 function checkChatGPTWithRisk(risk, cb) {
   httpGet(
     {
-      url: "https://chat.openai.com/cdn-cgi/trace",
+      url: "https://chatgpt.com/cdn-cgi/trace",
       headers: {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "en"
@@ -554,7 +597,7 @@ function checkChatGPTWithRisk(risk, cb) {
 
       httpGet(
         {
-          url: "https://chat.openai.com/",
+          url: "https://chatgpt.com/",
           headers: {
             "User-Agent": "Mozilla/5.0",
             "Accept-Language": "en"
@@ -647,27 +690,27 @@ function getASNMeta(ipApi, risk) {
   let abuseHistory = 0;
   const reasons = [];
 
-  if (hasAny(text, ASN_DB.badIdc)) {
+  if (hasAnySafe(text, ASN_DB.badIdc)) {
     abuseHistory += 62;
     uniquePush(reasons, "常见高共享机房/云ASN");
   }
 
-  if (hasAny(text, ASN_DB.bigCloud)) {
+  if (hasAnySafe(text, ASN_DB.bigCloud)) {
     abuseHistory += 48;
     uniquePush(reasons, "大云厂商ASN");
   }
 
-  if (hasAny(text, ASN_DB.smallIdc)) {
+  if (hasAnySafe(text, ASN_DB.smallIdc)) {
     abuseHistory += 30;
     uniquePush(reasons, "小型IDC/Hosting特征");
   }
 
-  if (hasAny(text, ASN_DB.neutralBusiness)) {
+  if (hasAnySafe(text, ASN_DB.neutralBusiness)) {
     abuseHistory -= 10;
     uniquePush(reasons, "带ISP/商宽底子");
   }
 
-  if (hasAny(text, ASN_DB.premiumEnterprise)) {
+  if (hasAnySafe(text, ASN_DB.premiumEnterprise)) {
     abuseHistory -= 16;
     uniquePush(reasons, "企业专线/商业线路特征");
   }
@@ -2111,7 +2154,7 @@ function fetchAll() {
       const ipApi = parseJSON(data1);
       if (!ipApi || !ipApi.query) return done("IP数据解析失败");
 
-      const resultCacheKey = getResultCacheKey(ipApi.query);
+      const resultCacheKey = getResultCacheKeyByMeta(ipApi);
       const resultCache = readCache(resultCacheKey);
       if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
         return done(resultCache.data);
