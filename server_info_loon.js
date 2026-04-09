@@ -1,17 +1,19 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.93
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.94
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.93 数据库严谨修正版重点：
- * 1. 短关键词安全匹配，降低 ATT / BT / Oi / TIM / O2 / AIS / M1 等误判
- * 2. ASN数据库收紧泛词，避免 business / fiber / network / communications 误加白
- * 3. Oracle Cloud / OCI 识别修正，避免短词误命中
- * 4. ChatGPT 检测切换 chatgpt.com，兼容性更稳
- * 5. Netflix 检测文案更严谨，避免“全解锁”式误导
- * 6. 结果缓存按 节点名 + IP + ASN + 国家码，减少串缓存
+ * 1.94 严谨修正版重点：
+ * 1. 短关键词继续收紧，移除 True 短词单独命中，降低普通英文误判
+ * 2. Transit 上游识别不再误伤主流 ISP / 企业线
+ * 3. orgLooksBusiness 组合化识别，避免 business / studio 等泛词带偏
+ * 4. ISP 语义识别改为组合匹配，fiber / broadband / residential 不再单独加白
+ * 5. 住宅/ISP 展示语义修正，避免与 ISP底子/共享嫌疑 混淆
+ * 6. 风险项 / 中性项布尔展示拆分
+ * 7. strictLibraryFlag 对优质企业线增加豁免
+ * 8. 结果缓存加入 proxy / hosting 维度，减少误复用
  *************************************/
 
 const TIMEOUT = 15000;
@@ -167,6 +169,10 @@ function boolLine(name, boolValue) {
   return (boolValue ? "🔴 " : "🟢 ") + name + "：" + (boolValue ? "是" : "否");
 }
 
+function neutralBoolLine(name, boolValue) {
+  return (boolValue ? "🟡 " : "⚪️ ") + name + "：" + (boolValue ? "是" : "否");
+}
+
 function done(msg) {
   $done({
     title: "节点详情查询 Ultimate",
@@ -218,11 +224,16 @@ function getResultCacheKeyByMeta(ipApi) {
   const ip = ipApi && ipApi.query ? ipApi.query : "unknown";
   const asn = ipApi && ipApi.as ? ipApi.as : "unknown_as";
   const cc = ipApi && ipApi.countryCode ? ipApi.countryCode : "xx";
+  const proxy = ipApi && ipApi.proxy ? "1" : "0";
+  const hosting = ipApi && ipApi.hosting ? "1" : "0";
+
   return "NODE_CHECK_RESULT_CACHE_" +
     encodeURIComponent(NODE_NAME || "default") + "_" +
     encodeURIComponent(ip) + "_" +
     encodeURIComponent(asn) + "_" +
-    encodeURIComponent(cc);
+    encodeURIComponent(cc) + "_" +
+    proxy + "_" +
+    hosting;
 }
 
 /*************** 主流运营商白名单 ***************/
@@ -233,11 +244,12 @@ const MAJOR_ISP_KEYWORDS = [
   "Vodafone", "Orange", "Telekom", "Telefonica", "Bouygues", "Free Mobile",
   "Singtel", "StarHub", "Telstra", "Optus", "dtac",
   "China Telecom", "China Unicom", "China Mobile", "CMHK", "PCCW", "HGC",
-  "SUPERLOOP", "Exetel", "Swisscom", "Virgin Media", "Claro", "Vivo"
+  "SUPERLOOP", "Exetel", "Swisscom", "Virgin Media", "Claro", "Vivo",
+  "True Online", "True Internet", "True Corp", "TrueMove"
 ];
 
 const MAJOR_ISP_SHORT_KEYWORDS = [
-  "ATT", "BT", "Oi", "TIM", "M1", "O2", "AIS", "True"
+  "ATT", "BT", "Oi", "TIM", "M1", "O2", "AIS"
 ];
 
 function isMajorISP(org, isp, asnOrg) {
@@ -250,6 +262,8 @@ function isMajorISP(org, isp, asnOrg) {
   for (let j = 0; j < MAJOR_ISP_SHORT_KEYWORDS.length; j++) {
     if (safeKeywordMatch(str, MAJOR_ISP_SHORT_KEYWORDS[j])) return true;
   }
+
+  if (/\btrue\b/i.test(str) && /\b(move|internet|online|corp)\b/i.test(str)) return true;
 
   return false;
 }
@@ -630,11 +644,27 @@ function checkChatGPTWithRisk(risk, cb) {
 
 /*************** 识别工具 ***************/
 function isIspLikeText(text) {
-  return hasAny(text, [
-    "isp", "telecom", "telecommunications", "telecomunicacoes", "telecomunicações",
-    "cable", "dsl", "fiber", "fibra", "ftth", "broadband", "residential",
-    "cable/dsl", "banda larga", "internet service provider", "proveedor", "provedor"
-  ]);
+  const t = lower(text);
+
+  if (/\b(isp|telecom|telecommunications|telecomunicacoes|telecomunicações|internet service provider)\b/i.test(t)) {
+    return true;
+  }
+
+  if (
+    /\b(cable|dsl|fiber|fibra|ftth|broadband|residential|cable\/dsl|banda larga)\b/i.test(t) &&
+    /\b(internet|telecom|provider|isp|broadband)\b/i.test(t)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(proveedor|provedor)\b/i.test(t) &&
+    /\b(internet|telecom|isp|banda larga)\b/i.test(t)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
@@ -675,7 +705,7 @@ function calcSharedISPScore(risk, ipApi, cz88) {
   if (risk.humanMeta && risk.humanMeta.score !== null && risk.humanMeta.score < 20) score += 18;
 
   if (text.indexOf("专线") !== -1) score += 10;
-  if (text.indexOf("business") !== -1 || text.indexOf("enterprise") !== -1) score += 6;
+  if (/\b(business|enterprise)\b/i.test(text)) score += 6;
 
   if (risk.majorISP) score -= 8;
   if (risk.abuseScore === 0) score -= 4;
@@ -841,8 +871,8 @@ function classifyLineQuality(risk, asnMeta, asnDensity, ipApi) {
   const all = lower([ipApi && ipApi.as, ipApi && ipApi.isp, ipApi && ipApi.org].join(" "));
   const looksEnterprise =
     all.indexOf("eons data") !== -1 ||
-    all.indexOf("enterprise") !== -1 ||
-    all.indexOf("business") !== -1 ||
+    /\benterprise\b/i.test(all) ||
+    /\bbusiness\b/i.test(all) ||
     all.indexOf("leased line") !== -1 ||
     all.indexOf("dedicated") !== -1 ||
     all.indexOf("mpls") !== -1;
@@ -1235,9 +1265,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   const orgLooksBusiness =
     !majorISP &&
-    hasAny(orgText, [
-      "enterprise", "business", "aviation", "studio"
-    ]);
+    (
+      /\benterprise\b/i.test(orgText) ||
+      /\bbusiness\b/i.test(orgText) ||
+      /\baviation\b/i.test(orgText)
+    ) &&
+    /\b(network|telecom|broadband|fiber|internet|communications?)\b/i.test(orgText + " " + ispText);
 
   let abuseScore = 0;
   let totalReports = 0;
@@ -1259,7 +1292,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   let dedicatedSuspiciousCount = 0;
   if (orgLooksBusiness) dedicatedSuspiciousCount++;
-  if (transitUpstreamHit) dedicatedSuspiciousCount++;
+  if (transitUpstreamHit && !majorISP) dedicatedSuspiciousCount++;
   if (hostingLikeOrg) dedicatedSuspiciousCount++;
   if (humanScore !== null && humanScore < 35) dedicatedSuspiciousCount++;
 
@@ -1712,12 +1745,35 @@ function analyzeRisk(ipApi, cz88, abuse) {
     suspiciousProxy = true;
   }
 
+  const strictLibraryExempt =
+    !ipApi.proxy &&
+    !blacklisted &&
+    !attackInvolved &&
+    riskValue < 55 &&
+    sharedFeel <= 35 &&
+    (
+      (
+        !cloudProvider.hit &&
+        !isASNDatacenter &&
+        (networkCategory === "商宽/企业宽带" || networkCategory === "运营商ISP网络" || networkCategory === "住宅宽带")
+      ) ||
+      (
+        networkCategory === "ISP底子 / 共享嫌疑" &&
+        sharedFeel <= 28 &&
+        nativeFeel >= 60 &&
+        abuseScore < 10
+      )
+    );
+
   if (
-    ipApi.proxy === true ||
-    blacklisted ||
-    attackInvolved ||
-    (cloudProvider.hit && riskValue >= 55 && sharedFeel >= 35) ||
-    (isASNDatacenter && platformRisk >= 60 && nativeFeel <= 55)
+    !strictLibraryExempt &&
+    (
+      ipApi.proxy === true ||
+      blacklisted ||
+      attackInvolved ||
+      (cloudProvider.hit && riskValue >= 55 && sharedFeel >= 35) ||
+      (isASNDatacenter && platformRisk >= 60 && nativeFeel <= 55)
+    )
   ) {
     strictLibraryFlag = true;
   }
@@ -2081,6 +2137,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     level,
     networkCategory,
     isResidential: networkCategory === "住宅宽带" || networkCategory === "运营商ISP网络",
+    isResidentialBase: networkCategory === "住宅宽带" || networkCategory === "运营商ISP网络" || networkCategory === "ISP底子 / 共享嫌疑",
     isBusinessLine: networkCategory === "商宽/企业宽带" || networkCategory === "机房宽带嫌疑" || networkCategory === "ISP底子 / 共享嫌疑",
     isDatacenter,
     isMobile,
@@ -2240,7 +2297,8 @@ function fetchAll() {
 
             lines.push("【网络检测】");
             lines.push("主类型：" + (risk.networkCategory || "-"));
-            lines.push("住宅/ISP底子：" + (risk.isResidential ? "是" : "否"));
+            lines.push("住宅 / 主流ISP：" + (risk.isResidential ? "是" : "否"));
+            lines.push("住宅 / ISP底子：" + (risk.isResidentialBase ? "是" : "否"));
             lines.push("商宽/专线底子：" + (risk.isBusinessLine ? "是" : "否"));
             lines.push("数据中心：" + (risk.isDatacenter ? "是" : "否"));
             lines.push("移动网络：" + (risk.isMobile ? "是" : "否"));
@@ -2366,6 +2424,13 @@ function fetchAll() {
             lines.push(line("代理等级", proxyTierText.text, proxyTierText.level));
             lines.push(boolLine("可疑代理", risk.suspiciousProxy));
             lines.push(boolLine("高风险代理", risk.highRiskProxy));
+            lines.push("");
+
+            lines.push("【中性网络标记】");
+            lines.push(neutralBoolLine("主流运营商", risk.majorISP));
+            lines.push(neutralBoolLine("移动网络", risk.isMobile));
+            lines.push(neutralBoolLine("数据中心属性", risk.isDatacenter));
+            lines.push(neutralBoolLine("ISP底子候选", risk.ispLikeCandidate));
             lines.push("");
 
             lines.push("【分平台建议】");
