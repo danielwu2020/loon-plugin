@@ -1,25 +1,27 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-2.00
+ * 节点详情查询 Ultimate（精修完整合并版）
+ * Version: 2.01
+ *
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 2.00 精修完整版重点：
- * 1. Netflix 检测彻底并行化，单样本不再串行阻塞
- * 2. 所有检测项加入超时保护，防止单项卡死
- * 3. HTTP 请求加入轻量重试，降低偶发失败率
- * 4. 结果缓存 Key 再增强，进一步避免误吃旧画像
- * 5. 展示字段统一 safeText / ZIP 兜底
- * 6. 保持 1.99 整体风控框架，同时收敛部分弱特征误伤
+ * 2.01 重点修正：
+ * 1. Netflix 改为“样本片近似检测”，避免误导为真实区服识别
+ * 2. ChatGPT 改为“CF 视角地区支持判断”，不再过度实锤
+ * 3. 企业线/商宽误伤进一步收敛
+ * 4. 结果缓存 Key 轻量化 + hash 化
+ * 5. 本地拟合结果免责声明进一步明确
+ * 6. 保持 2.00 并行/超时/缓存框架
  *************************************/
 
-const SCRIPT_VERSION = "2.00";
+const SCRIPT_VERSION = "2.01";
 const TIMEOUT = 15000;
 const CHECK_GUARD_TIMEOUT = 16000;
 const REQUEST_RETRY = 1;
-const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12小时
-const RESULT_CACHE_TTL = 10 * 60 * 1000;     // 10分钟整体验证缓存
+const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000;
+const RESULT_CACHE_TTL = 10 * 60 * 1000;
 
 /*************** 参数读取 ***************/
 function getArgs() {
@@ -152,108 +154,6 @@ function hasAnySafe(text, arr) {
   return false;
 }
 
-function shouldRetryHttp(error, response) {
-  if (error) return true;
-  const code = response && (response.status || response.statusCode || 0);
-  if (!code) return true;
-  return code >= 500;
-}
-
-function httpGet(target, callback, retryLeft) {
-  const opts = typeof target === "string" ? { url: target } : (target || {});
-  if (!opts.timeout) opts.timeout = TIMEOUT;
-  if (NODE_PARAM) opts.node = NODE_PARAM;
-
-  const remain = typeof retryLeft === "number" ? retryLeft : REQUEST_RETRY;
-
-  $httpClient.get(opts, function (error, response, data) {
-    if (remain > 0 && shouldRetryHttp(error, response)) {
-      return httpGet(opts, callback, remain - 1);
-    }
-    callback(error, response, data);
-  });
-}
-
-function matchTransitUpstream(text, majorISP) {
-  const t = lower(text);
-  if (!t || majorISP) return false;
-
-  const upstreamBrandHit = hasAnySafe(t, SUSPICIOUS_TRANSIT_UPSTREAMS);
-
-  const transitSemanticHit =
-    /\b(ip transit|transit provider|upstream carrier|upstream network|global backbone|international backbone)\b/i.test(t);
-
-  const resellerSemanticHit =
-    /\b(reseller|resale|wholesale|bgp|upstream|carrier service|ip service)\b/i.test(t);
-
-  if (upstreamBrandHit && (transitSemanticHit || resellerSemanticHit)) {
-    return true;
-  }
-
-  return false;
-}
-
-function matchHostingLikeOrg(text) {
-  const t = lower(text);
-  if (!t) return false;
-
-  const hostingCore =
-    /\b(hosting|datacenter|data center|idc|colocation|vps)\b/i.test(t);
-
-  const infraWord =
-    /\b(server|rack|cabinet|hypervisor|bare metal|virtual machine|virtualization)\b/i.test(t);
-
-  const strongBrandHit = hasAnySafe(t, [
-    "digitalocean",
-    "linode",
-    "akamai connected cloud",
-    "vultr",
-    "choopa",
-    "ovh",
-    "hetzner",
-    "contabo",
-    "m247"
-  ]);
-
-  if (strongBrandHit) return true;
-  if (hostingCore && infraWord) return true;
-
-  return false;
-}
-
-/**
- * 2.00 延续 1.99：
- * ASN机房判断不允许 hosting/datacenter/idc/vps 单词单独触发
- * 改为：强品牌直判 + 通用词(core) + infra 组合命中
- */
-function matchASNDatacenterText(text) {
-  const t = lower(text);
-  if (!t) return false;
-
-  const strongBrandHit = hasAnySafe(t, [
-    "digitalocean",
-    "linode",
-    "akamai connected cloud",
-    "vultr",
-    "choopa",
-    "ovh",
-    "hetzner",
-    "contabo",
-    "m247"
-  ]);
-
-  const hostingCore =
-    /\b(hosting|datacenter|data center|idc|vps)\b/i.test(t);
-
-  const infraWord =
-    /\b(cloud server|bare metal|virtual machine|hypervisor|virtualization)\b/i.test(t);
-
-  if (strongBrandHit) return true;
-  if (hostingCore && infraWord) return true;
-
-  return false;
-}
-
 function uniquePush(arr, val) {
   if (arr.indexOf(val) === -1) arr.push(val);
 }
@@ -286,9 +186,39 @@ function done(msg) {
   });
 }
 
-/**
- * 2.00：并行执行检测 + 单项超时保护
- */
+function simpleHash(str) {
+  let hash = 2166136261;
+  const s = String(str || "");
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function shouldRetryHttp(error, response) {
+  if (error) return true;
+  const code = response && (response.status || response.statusCode || 0);
+  if (!code) return true;
+  return code >= 500;
+}
+
+function httpGet(target, callback, retryLeft) {
+  const opts = typeof target === "string" ? { url: target } : (target || {});
+  if (!opts.timeout) opts.timeout = TIMEOUT;
+  if (NODE_PARAM) opts.node = NODE_PARAM;
+
+  const remain = typeof retryLeft === "number" ? retryLeft : REQUEST_RETRY;
+
+  $httpClient.get(opts, function (error, response, data) {
+    if (remain > 0 && shouldRetryHttp(error, response)) {
+      return httpGet(opts, callback, remain - 1);
+    }
+    callback(error, response, data);
+  });
+}
+
+/*************** 并行检测 ***************/
 function runChecksParallel(checks, callback) {
   if (!checks || !checks.length) return callback([]);
 
@@ -306,26 +236,26 @@ function runChecksParallel(checks, callback) {
 
   checks.forEach(function (item, idx) {
     let settled = false;
+    let timer = null;
 
     function settle(value, level) {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       results[idx] = { name: item.name, value: value, level: level };
       finished++;
       finishOnce();
     }
 
-    const timer = setTimeout(function () {
+    timer = setTimeout(function () {
       settle("检测超时", "neutral");
     }, CHECK_GUARD_TIMEOUT);
 
     try {
       item.run(function (value, level) {
-        clearTimeout(timer);
         settle(value, level);
       });
     } catch (e) {
-      clearTimeout(timer);
       settle("检测异常", "fail");
     }
   });
@@ -363,21 +293,18 @@ function getResultCacheKeyByMeta(ipApi, cz88Data) {
   const cc = ipApi && ipApi.countryCode ? ipApi.countryCode : "xx";
   const proxy = ipApi && ipApi.proxy ? "1" : "0";
   const hosting = ipApi && ipApi.hosting ? "1" : "0";
-  const isp = encodeURIComponent(safeText(ipApi && ipApi.isp, "-"));
-  const org = encodeURIComponent(safeText(ipApi && ipApi.org, "-"));
-  const netType = encodeURIComponent(safeText(cz88Data && cz88Data.netWorkType, "-"));
+  const netType = safeText(cz88Data && cz88Data.netWorkType, "-");
+  const mini = [
+    NODE_NAME || "default",
+    ip,
+    asn,
+    cc,
+    proxy,
+    hosting,
+    netType
+  ].join("|");
 
-  return "NODE_CHECK_RESULT_CACHE_" +
-    SCRIPT_VERSION + "_" +
-    encodeURIComponent(NODE_NAME || "default") + "_" +
-    encodeURIComponent(ip) + "_" +
-    encodeURIComponent(asn) + "_" +
-    encodeURIComponent(cc) + "_" +
-    proxy + "_" +
-    hosting + "_" +
-    isp + "_" +
-    org + "_" +
-    netType;
+  return "NODE_CHECK_RESULT_CACHE_" + SCRIPT_VERSION + "_" + simpleHash(mini);
 }
 
 /*************** 主流运营商白名单 ***************/
@@ -411,7 +338,7 @@ function isMajorISP(org, isp, asnOrg) {
   return false;
 }
 
-/*************** ASN 数据库增强 ***************/
+/*************** ASN / 云数据库 ***************/
 const ASN_DB = {
   premiumEnterprise: [
     "eons data",
@@ -466,7 +393,6 @@ const ASN_DB = {
   ]
 };
 
-/*************** 云厂商 / Hosting 数据库 ***************/
 const CLOUD_PROVIDER_RULES = [
   { name: "AWS", keys: ["amazon technologies", "amazon data services", "ec2", "amazon aws"] },
   { name: "Google Cloud", keys: ["google cloud", "google llc cloud", "gcp"] },
@@ -501,6 +427,79 @@ const SUSPICIOUS_TRANSIT_UPSTREAMS = [
   "lumen"
 ];
 
+function matchTransitUpstream(text, majorISP) {
+  const t = lower(text);
+  if (!t || majorISP) return false;
+
+  const upstreamBrandHit = hasAnySafe(t, SUSPICIOUS_TRANSIT_UPSTREAMS);
+  const transitSemanticHit =
+    /\b(ip transit|transit provider|upstream carrier|upstream network|global backbone|international backbone)\b/i.test(t);
+  const resellerSemanticHit =
+    /\b(reseller|resale|wholesale|bgp|upstream|carrier service|ip service)\b/i.test(t);
+
+  if (upstreamBrandHit && (transitSemanticHit || resellerSemanticHit)) {
+    return true;
+  }
+
+  return false;
+}
+
+function matchHostingLikeOrg(text) {
+  const t = lower(text);
+  if (!t) return false;
+
+  const hostingCore =
+    /\b(hosting|datacenter|data center|idc|colocation|vps)\b/i.test(t);
+
+  const infraWord =
+    /\b(server|rack|cabinet|hypervisor|bare metal|virtual machine|virtualization)\b/i.test(t);
+
+  const strongBrandHit = hasAnySafe(t, [
+    "digitalocean",
+    "linode",
+    "akamai connected cloud",
+    "vultr",
+    "choopa",
+    "ovh",
+    "hetzner",
+    "contabo",
+    "m247"
+  ]);
+
+  if (strongBrandHit) return true;
+  if (hostingCore && infraWord) return true;
+
+  return false;
+}
+
+function matchASNDatacenterText(text) {
+  const t = lower(text);
+  if (!t) return false;
+
+  const strongBrandHit = hasAnySafe(t, [
+    "digitalocean",
+    "linode",
+    "akamai connected cloud",
+    "vultr",
+    "choopa",
+    "ovh",
+    "hetzner",
+    "contabo",
+    "m247"
+  ]);
+
+  const hostingCore =
+    /\b(hosting|datacenter|data center|idc|vps)\b/i.test(t);
+
+  const infraWord =
+    /\b(cloud server|bare metal|virtual machine|hypervisor|virtualization)\b/i.test(t);
+
+  if (strongBrandHit) return true;
+  if (hostingCore && infraWord) return true;
+
+  return false;
+}
+
 function detectCloudProvider(ipApi, cz88) {
   const text = [
     ipApi && ipApi.as,
@@ -532,7 +531,7 @@ function detectCloudProvider(ipApi, cz88) {
   return { hit: false, name: "", keyword: "" };
 }
 
-/*************** OpenAI 支持地区（静态表） ***************/
+/*************** OpenAI 支持地区 ***************/
 const OPENAI_SUPPORTED_LOCS = [
   "AL","DZ","AD","AO","AG","AR","AM","AU","AT","AZ",
   "BS","BD","BB","BE","BZ","BJ","BT","BA","BW","BR","BN","BG","BF","CV","CA",
@@ -546,7 +545,6 @@ const OPENAI_SUPPORTED_LOCS = [
   "TW","TZ","TH","TL","TG","TO","TT","TN","TR","TV","UG","UA","AE","GB","US","UY","VU","ZM"
 ];
 
-/*************** trace / GPT 工具 ***************/
 function parseTrace(text) {
   const obj = {};
   String(text || "").split("\n").forEach(function (line) {
@@ -620,31 +618,31 @@ function checkAbuseIPDB(ip, cb) {
   );
 }
 
-/*************** 流媒体 / 平台检测 ***************/
+/*************** 平台 / 流媒体检测 ***************/
 function checkNetflix(cb) {
   const tests = [
-    { region: "US", id: "70143836" },
-    { region: "JP", id: "80018499" },
-    { region: "SG", id: "81215567" },
-    { region: "GB", id: "80007226" }
+    { label: "样本A", id: "70143836" },
+    { label: "样本B", id: "80018499" },
+    { label: "样本C", id: "81215567" },
+    { label: "样本D", id: "80007226" }
   ];
 
   let finished = 0;
   let strongBlocked = 0;
   let uncertainBlocked = 0;
-  const successRegions = [];
+  const successLabels = [];
 
   function finalize() {
-    if (successRegions.length) {
-      return cb("样本可访问（" + successRegions.join("/") + "）", "ok");
+    if (successLabels.length) {
+      return cb("样本片可访问（" + successLabels.join("/") + "，近似检测）", "ok");
     }
     if (strongBlocked >= tests.length) {
-      return cb("样本均受限", "fail");
+      return cb("样本片均受限（近似检测）", "fail");
     }
     if (strongBlocked + uncertainBlocked >= tests.length) {
-      return cb("样本均未明确通过（结果不确定）", "warn");
+      return cb("样本片均未明确通过（结果不确定）", "warn");
     }
-    return cb("部分样本失败（未确认完整解锁）", "warn");
+    return cb("部分样本失败（未确认完整可用）", "warn");
   }
 
   tests.forEach(function (item) {
@@ -666,10 +664,8 @@ function checkNetflix(cb) {
         }
 
         const code = resp.status || resp.statusCode || 0;
-
-        if (code === 200) successRegions.push(item.region);
+        if (code === 200) successLabels.push(item.label);
         else if (code === 403) strongBlocked++;
-        else if (code === 404) uncertainBlocked++;
         else uncertainBlocked++;
 
         if (finished >= tests.length) finalize();
@@ -736,7 +732,7 @@ function checkYouTube(cb) {
       const body = data || "";
       const match = body.match(/"countryCode":"(.*?)"/) || body.match(/"GL":"(.*?)"/);
 
-      if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
+      if (match && match[1]) return cb("Premium 页面地区 " + match[1], "ok");
 
       if (/youtube premium is not available/i.test(body) || /not available/i.test(body)) {
         return cb("当前地区不可用", "warn");
@@ -769,7 +765,7 @@ function checkChatGPTWithRisk(risk, cb) {
 
           if (isOpenAISupportedLoc(loc)) {
             if (warp === "on") {
-              return cb("WARP解锁（" + loc + " / " + traceIp + "）", "warn");
+              return cb("地区支持（CF视角：" + loc + " / WARP / " + traceIp + "）", "warn");
             }
 
             if (
@@ -782,13 +778,13 @@ function checkChatGPTWithRisk(risk, cb) {
                 risk.suspiciousProxy
               )
             ) {
-              return cb("代理解锁（" + loc + " / " + traceIp + "）", "warn");
+              return cb("地区支持（CF视角：" + loc + " / 代理特征 / " + traceIp + "）", "warn");
             }
 
-            return cb("原生解锁（" + loc + " / " + traceIp + "）", "ok");
+            return cb("地区支持（CF视角：" + loc + " / " + traceIp + "）", "ok");
           }
 
-          return cb("未解锁（" + (loc || "未知地区") + " / " + traceIp + "）", "fail");
+          return cb("地区不在支持列表（CF视角：" + (loc || "未知") + " / " + traceIp + "）", "fail");
         }
       }
 
@@ -811,7 +807,7 @@ function checkChatGPTWithRisk(risk, cb) {
           }
 
           if (code2 === 200 || code2 === 301 || code2 === 302) {
-            return cb("网页可访问（未识别地区，非真实解锁结论）", "warn");
+            return cb("网页可访问（未识别地区，仅网页层结论）", "warn");
           }
 
           if (code2 === 403) {
@@ -881,12 +877,6 @@ function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
   return hitScore >= 55;
 }
 
-/**
- * 2.00：
- * 专线 / business / enterprise 只有在共享感、原生低、平台风险高等背景下才弱加分
- * 不再直接粗暴抬高共享ISP评分
- * 对移动网络额外降权，减少误伤
- */
 function calcSharedISPScore(risk, ipApi, cz88) {
   let score = 0;
   const text = [
@@ -1319,7 +1309,7 @@ function calcBehaviorModel(risk) {
   };
 }
 
-/*************** 多源模拟（不是实际 API） ***************/
+/*************** 本地拟合（非真实 API） ***************/
 function simulateMultiSourceScores(risk, ipApi) {
   const riskValue = Math.round(risk.riskValue || 0);
   const shared = Math.round(risk.sharedFeel || 0);
@@ -1366,7 +1356,6 @@ function simulateMultiSourceScores(risk, ipApi) {
   return { ippure, scamalytics, ip2location, ipregistry };
 }
 
-/*************** ASN / 类型 ***************/
 function inferAsnType(ipApi, risk) {
   const asText = lower(ipApi && ipApi.as);
   const ispText = lower(ipApi && ipApi.isp);
@@ -1412,7 +1401,6 @@ function inferIpTypeLabel(risk, ipApi, cz88) {
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
 }
-
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
@@ -1521,6 +1509,15 @@ function analyzeRisk(ipApi, cz88, abuse) {
     totalReports = Number(abuse.data.totalReports || 0);
   }
 
+  const enterpriseCleanShield =
+    !ipApi.proxy &&
+    !ipApi.hosting &&
+    abuseScore < 10 &&
+    humanScore !== null &&
+    humanScore >= 60 &&
+    !cloudNativeDatacenter &&
+    !isASNDatacenter;
+
   if (isASNDatacenter || (cloudNativeDatacenter && (ipApi.hosting === true || rawLower.indexOf("机房") !== -1 || rawLower.indexOf("数据中心") !== -1))) {
     isDatacenter = true;
     isResidential = false;
@@ -1535,9 +1532,10 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let dedicatedSuspiciousCount = 0;
   if (orgBusinessStrong) dedicatedSuspiciousCount += 1;
   if (orgBusinessWeak) dedicatedSuspiciousCount += 0.5;
-  if (transitUpstreamHit && !majorISP) dedicatedSuspiciousCount += 1;
-  if (hostingLikeOrg) dedicatedSuspiciousCount += 1;
-  if (humanScore !== null && humanScore < 35) dedicatedSuspiciousCount += 1;
+
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) dedicatedSuspiciousCount += 1;
+  if (hostingLikeOrg && !enterpriseCleanShield) dedicatedSuspiciousCount += 1;
+  if (humanScore !== null && humanScore < 35 && !enterpriseCleanShield) dedicatedSuspiciousCount += 1;
 
   const dedicatedLineSuspicious =
     rawLower.indexOf("专线") !== -1 &&
@@ -1562,7 +1560,9 @@ function analyzeRisk(ipApi, cz88, abuse) {
   } else if (dedicatedLineSuspicious) {
     networkCategory = ispLikeCandidate ? "ISP底子 / 共享嫌疑" : "机房宽带嫌疑";
   } else if (isBusinessLine) {
-    if (ispLikeCandidate) {
+    if (enterpriseCleanShield) {
+      networkCategory = "商宽/企业宽带";
+    } else if (ispLikeCandidate) {
       networkCategory = "商宽/企业宽带";
     } else if (hostingLikeOrg || transitUpstreamHit) {
       networkCategory = "ISP底子 / 共享嫌疑";
@@ -1615,11 +1615,11 @@ function analyzeRisk(ipApi, cz88, abuse) {
     uniquePush(tags, "云厂商品牌命中");
   }
 
-  if (transitUpstreamHit && !majorISP) {
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) {
     uniquePush(tags, "Transit上游");
   }
 
-  if (hostingLikeOrg && !majorISP) {
+  if (hostingLikeOrg && !majorISP && !enterpriseCleanShield) {
     uniquePush(tags, "组织疑似Hosting");
   }
 
@@ -1706,7 +1706,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (cloudNativeDatacenter) riskValue += 22;
   else if (cloudHitOnly) riskValue += 8;
   if (dedicatedLineSuspicious && networkCategory !== "ISP底子 / 共享嫌疑") riskValue += 8;
-  if (transitUpstreamHit && !majorISP) riskValue += 6;
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) riskValue += 6;
 
   if (humanScore !== null) {
     if (humanScore >= 80) riskValue -= 8;
@@ -1735,7 +1735,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (cloudNativeDatacenter) nativeFeel -= 20;
   else if (cloudHitOnly) nativeFeel -= 6;
   if (dedicatedLineSuspicious && networkCategory !== "ISP底子 / 共享嫌疑") nativeFeel -= 6;
-  if (transitUpstreamHit && !majorISP) nativeFeel -= 4;
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) nativeFeel -= 4;
 
   if (humanScore !== null) {
     if (humanScore >= 80) nativeFeel += 14;
@@ -1802,7 +1802,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (dataCompletenessScore >= 50) dataCompleteness = "中";
   else dataCompleteness = "低";
 
-  /*************** 特征推断模块 ***************/
   let residentialScore = 40;
   let businessScore = 26;
   let datacenterScore = 22;
@@ -1818,13 +1817,12 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "运营商移动网络" || networkCategory === "移动数据") residentialScore += 6;
 
   if (majorISP) residentialScore += 6;
-
   if (orgBusinessStrong) businessScore += 12;
   else if (orgBusinessWeak) businessScore += 6;
 
   if (dedicatedLineSuspicious && networkCategory !== "ISP底子 / 共享嫌疑") datacenterScore += 10;
 
-  if (transitUpstreamHit && !majorISP) {
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) {
     businessScore += 4;
     datacenterScore += 8;
   }
@@ -1909,7 +1907,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "商宽/企业宽带") fakeResidentialRisk += residentialLikeSurface ? 18 : 6;
   if (networkCategory === "机房宽带嫌疑") fakeResidentialRisk += residentialLikeSurface ? 28 : 10;
   if (networkCategory === "数据中心/服务器") fakeResidentialRisk += residentialLikeSurface ? 32 : 12;
-  if (transitUpstreamHit && !majorISP) fakeResidentialRisk += residentialLikeSurface ? 10 : 4;
+  if (transitUpstreamHit && !majorISP && !enterpriseCleanShield) fakeResidentialRisk += residentialLikeSurface ? 10 : 4;
   if (majorISP) fakeResidentialRisk -= residentialLikeSurface ? 18 : 6;
 
   fakeResidentialRisk = clamp(fakeResidentialRisk, 0, residentialLikeSurface ? 100 : 40);
@@ -2119,7 +2117,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (score >= 70) level = "良好";
   else if (score >= 50) level = "一般";
   else level = "较差";
-    let appleRisk = 0;
+
+  let appleRisk = 0;
   let googleRisk = 0;
   let tiktokRisk = 0;
   let telegramRisk = 0;
@@ -2733,11 +2732,11 @@ function fetchAll() {
             lines.push(line("cz88", cz88Score.text, cz88Score.level));
             lines.push("");
 
-            lines.push("【本地拟合估计（仅供风格参考，非官方结果）】");
-            lines.push(line("IPPure风格拟合", simulated.ippure.text, simulated.ippure.level));
-            lines.push(line("Scamalytics风格拟合", simulated.scamalytics.text, simulated.scamalytics.level));
-            lines.push(line("IP2Location风格拟合", simulated.ip2location.text, simulated.ip2location.level));
-            lines.push(line("ipregistry风格拟合", simulated.ipregistry.text, simulated.ipregistry.level));
+            lines.push("【本地规则映射（非真实官方接口，仅供风格参考）】");
+            lines.push(line("IPPure风格映射", simulated.ippure.text, simulated.ippure.level));
+            lines.push(line("Scamalytics风格映射", simulated.scamalytics.text, simulated.scamalytics.level));
+            lines.push(line("IP2Location风格映射", simulated.ip2location.text, simulated.ip2location.level));
+            lines.push(line("ipregistry风格映射", simulated.ipregistry.text, simulated.ipregistry.level));
             lines.push("");
 
             lines.push("【硬风险判定】");
