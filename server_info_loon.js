@@ -1,21 +1,23 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.99
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-2.00
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.99 精修完整版重点：
- * 1. Netflix 404 改为“不确定样本”，不再与强封锁等价
- * 2. 流媒体检测改为并行执行，整体速度更快
- * 3. 结果缓存 Key 增加版本号，避免升级后吃旧缓存
- * 4. ZIP 显示统一兜底为 "-"
- * 5. icon(level) 明确支持 fail / neutral
- * 6. 保持 1.98 的整体风控框架，同时修正部分文案和检测口径
+ * 2.00 精修完整版重点：
+ * 1. Netflix 检测彻底并行化，单样本不再串行阻塞
+ * 2. 所有检测项加入超时保护，防止单项卡死
+ * 3. HTTP 请求加入轻量重试，降低偶发失败率
+ * 4. 结果缓存 Key 再增强，进一步避免误吃旧画像
+ * 5. 展示字段统一 safeText / ZIP 兜底
+ * 6. 保持 1.99 整体风控框架，同时收敛部分弱特征误伤
  *************************************/
 
-const SCRIPT_VERSION = "1.99";
+const SCRIPT_VERSION = "2.00";
 const TIMEOUT = 15000;
+const CHECK_GUARD_TIMEOUT = 16000;
+const REQUEST_RETRY = 1;
 const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12小时
 const RESULT_CACHE_TTL = 10 * 60 * 1000;     // 10分钟整体验证缓存
 
@@ -97,15 +99,6 @@ const NODE_NAME = getNodeName();
 const NODE_PARAM = getNodeParam();
 
 /*************** 工具 ***************/
-function httpGet(target, callback) {
-  const opts = typeof target === "string" ? { url: target } : target;
-  if (!opts.timeout) opts.timeout = TIMEOUT;
-  if (NODE_PARAM) opts.node = NODE_PARAM;
-  $httpClient.get(opts, function (error, response, data) {
-    callback(error, response, data);
-  });
-}
-
 function parseJSON(str) {
   try { return JSON.parse(str); } catch (e) { return null; }
 }
@@ -116,6 +109,16 @@ function clamp(n, min, max) {
 
 function lower(v) {
   return String(v || "").toLowerCase();
+}
+
+function safeText(v, fallback) {
+  const s = String(v == null ? "" : v).trim();
+  return s ? s : (fallback || "-");
+}
+
+function safeZip(v) {
+  const s = String(v == null ? "" : v).trim();
+  return s ? s : "-";
 }
 
 function escapeRegExp(str) {
@@ -147,6 +150,28 @@ function hasAnySafe(text, arr) {
     if (safeKeywordMatch(t, arr[i])) return true;
   }
   return false;
+}
+
+function shouldRetryHttp(error, response) {
+  if (error) return true;
+  const code = response && (response.status || response.statusCode || 0);
+  if (!code) return true;
+  return code >= 500;
+}
+
+function httpGet(target, callback, retryLeft) {
+  const opts = typeof target === "string" ? { url: target } : (target || {});
+  if (!opts.timeout) opts.timeout = TIMEOUT;
+  if (NODE_PARAM) opts.node = NODE_PARAM;
+
+  const remain = typeof retryLeft === "number" ? retryLeft : REQUEST_RETRY;
+
+  $httpClient.get(opts, function (error, response, data) {
+    if (remain > 0 && shouldRetryHttp(error, response)) {
+      return httpGet(opts, callback, remain - 1);
+    }
+    callback(error, response, data);
+  });
 }
 
 function matchTransitUpstream(text, majorISP) {
@@ -197,7 +222,7 @@ function matchHostingLikeOrg(text) {
 }
 
 /**
- * 1.99 延续 1.98：
+ * 2.00 延续 1.99：
  * ASN机房判断不允许 hosting/datacenter/idc/vps 单词单独触发
  * 改为：强品牌直判 + 通用词(core) + infra 组合命中
  */
@@ -262,7 +287,7 @@ function done(msg) {
 }
 
 /**
- * 1.99：并行执行检测
+ * 2.00：并行执行检测 + 单项超时保护
  */
 function runChecksParallel(checks, callback) {
   if (!checks || !checks.length) return callback([]);
@@ -290,11 +315,17 @@ function runChecksParallel(checks, callback) {
       finishOnce();
     }
 
+    const timer = setTimeout(function () {
+      settle("检测超时", "neutral");
+    }, CHECK_GUARD_TIMEOUT);
+
     try {
       item.run(function (value, level) {
+        clearTimeout(timer);
         settle(value, level);
       });
     } catch (e) {
+      clearTimeout(timer);
       settle("检测异常", "fail");
     }
   });
@@ -326,12 +357,15 @@ function getAbuseCacheKey(ip) {
   return "NODE_CHECK_ABUSE_CACHE_" + ip;
 }
 
-function getResultCacheKeyByMeta(ipApi) {
+function getResultCacheKeyByMeta(ipApi, cz88Data) {
   const ip = ipApi && ipApi.query ? ipApi.query : "unknown";
   const asn = ipApi && ipApi.as ? ipApi.as : "unknown_as";
   const cc = ipApi && ipApi.countryCode ? ipApi.countryCode : "xx";
   const proxy = ipApi && ipApi.proxy ? "1" : "0";
   const hosting = ipApi && ipApi.hosting ? "1" : "0";
+  const isp = encodeURIComponent(safeText(ipApi && ipApi.isp, "-"));
+  const org = encodeURIComponent(safeText(ipApi && ipApi.org, "-"));
+  const netType = encodeURIComponent(safeText(cz88Data && cz88Data.netWorkType, "-"));
 
   return "NODE_CHECK_RESULT_CACHE_" +
     SCRIPT_VERSION + "_" +
@@ -340,7 +374,10 @@ function getResultCacheKeyByMeta(ipApi) {
     encodeURIComponent(asn) + "_" +
     encodeURIComponent(cc) + "_" +
     proxy + "_" +
-    hosting;
+    hosting + "_" +
+    isp + "_" +
+    org + "_" +
+    netType;
 }
 
 /*************** 主流运营商白名单 ***************/
@@ -592,21 +629,25 @@ function checkNetflix(cb) {
     { region: "GB", id: "80007226" }
   ];
 
-  let idx = 0;
+  let finished = 0;
   let strongBlocked = 0;
   let uncertainBlocked = 0;
-  let successRegion = "";
+  const successRegions = [];
 
-  function next() {
-    if (idx >= tests.length) {
-      if (successRegion) return cb("样本可访问（" + successRegion + "）", "ok");
-      if (strongBlocked >= tests.length) return cb("样本均受限", "fail");
-      if (strongBlocked + uncertainBlocked >= tests.length) return cb("样本均未明确通过（结果不确定）", "warn");
-      return cb("部分样本失败（未确认完整解锁）", "warn");
+  function finalize() {
+    if (successRegions.length) {
+      return cb("样本可访问（" + successRegions.join("/") + "）", "ok");
     }
+    if (strongBlocked >= tests.length) {
+      return cb("样本均受限", "fail");
+    }
+    if (strongBlocked + uncertainBlocked >= tests.length) {
+      return cb("样本均未明确通过（结果不确定）", "warn");
+    }
+    return cb("部分样本失败（未确认完整解锁）", "warn");
+  }
 
-    const item = tests[idx++];
-
+  tests.forEach(function (item) {
     httpGet(
       {
         url: "https://www.netflix.com/title/" + item.id,
@@ -616,35 +657,25 @@ function checkNetflix(cb) {
         }
       },
       function (err, resp) {
+        finished++;
+
         if (err || !resp) {
           uncertainBlocked++;
-          return next();
+          if (finished >= tests.length) finalize();
+          return;
         }
 
         const code = resp.status || resp.statusCode || 0;
 
-        if (code === 200) {
-          successRegion = item.region;
-          return next();
-        }
+        if (code === 200) successRegions.push(item.region);
+        else if (code === 403) strongBlocked++;
+        else if (code === 404) uncertainBlocked++;
+        else uncertainBlocked++;
 
-        if (code === 403) {
-          strongBlocked++;
-          return next();
-        }
-
-        if (code === 404) {
-          uncertainBlocked++;
-          return next();
-        }
-
-        uncertainBlocked++;
-        return next();
+        if (finished >= tests.length) finalize();
       }
     );
-  }
-
-  next();
+  });
 }
 
 function checkDisney(cb) {
@@ -851,7 +882,7 @@ function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
 }
 
 /**
- * 1.99：
+ * 2.00：
  * 专线 / business / enterprise 只有在共享感、原生低、平台风险高等背景下才弱加分
  * 不再直接粗暴抬高共享ISP评分
  * 对移动网络额外降权，减少误伤
@@ -1381,6 +1412,7 @@ function inferIpTypeLabel(risk, ipApi, cz88) {
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
 }
+
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
@@ -2087,8 +2119,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (score >= 70) level = "良好";
   else if (score >= 50) level = "一般";
   else level = "较差";
-
-  let appleRisk = 0;
+    let appleRisk = 0;
   let googleRisk = 0;
   let tiktokRisk = 0;
   let telegramRisk = 0;
@@ -2517,18 +2548,18 @@ function fetchAll() {
       const ipApi = parseJSON(data1);
       if (!ipApi || !ipApi.query) return done("IP数据解析失败");
 
-      const resultCacheKey = getResultCacheKeyByMeta(ipApi);
-      const resultCache = readCache(resultCacheKey);
-      if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
-        return done(resultCache.data);
-      }
-
       const cz88Url = "https://www.cz88.net/api/cz88/ip/base?ip=" + ipApi.query;
       httpGet(cz88Url, function (err2, res2, data2) {
         let cz88Data = null;
         if (!err2 && data2) {
           const cz88Json = parseJSON(data2);
           if (cz88Json && cz88Json.data) cz88Data = cz88Json.data;
+        }
+
+        const resultCacheKey = getResultCacheKeyByMeta(ipApi, cz88Data);
+        const resultCache = readCache(resultCacheKey);
+        if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
+          return done(resultCache.data);
         }
 
         checkAbuseIPDB(ipApi.query, function (abuseData, abuseFromCache) {
@@ -2578,32 +2609,32 @@ function fetchAll() {
             const lines = [];
 
             lines.push("【节点信息】");
-            lines.push("节点：" + NODE_NAME);
+            lines.push("节点：" + safeText(NODE_NAME, "当前节点"));
             lines.push("版本：" + SCRIPT_VERSION);
             lines.push("");
 
             lines.push("【IP详细】");
-            lines.push("IP：" + (ipApi.query || "-"));
-            lines.push("ASN：" + (ipApi.as || "-"));
-            lines.push("ASN类型：" + asnType);
-            lines.push("IP类型：" + ipTypeLabel);
-            lines.push("位置：" + (ipApi.country || "-") + " " + (ipApi.regionName || "-") + " " + (ipApi.city || "-"));
+            lines.push("IP：" + safeText(ipApi.query, "-"));
+            lines.push("ASN：" + safeText(ipApi.as, "-"));
+            lines.push("ASN类型：" + safeText(asnType, "-"));
+            lines.push("IP类型：" + safeText(ipTypeLabel, "-"));
+            lines.push("位置：" + safeText(ipApi.country, "-") + " " + safeText(ipApi.regionName, "-") + " " + safeText(ipApi.city, "-"));
             lines.push("");
 
             lines.push("【基础信息】");
-            lines.push("国家/地区：" + (ipApi.country || "-"));
-            lines.push("地区：" + (ipApi.regionName || "-"));
-            lines.push("城市：" + (ipApi.city || "-"));
-            lines.push("ZIP：" + (ipApi.zip || "-"));
-            lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
-            lines.push("组织：" + (ipApi.org || "-"));
-            lines.push("时区：" + (ipApi.timezone || "-"));
-            lines.push("经纬度：" + (ipApi.lat || "-") + " / " + (ipApi.lon || "-"));
+            lines.push("国家/地区：" + safeText(ipApi.country, "-"));
+            lines.push("地区：" + safeText(ipApi.regionName, "-"));
+            lines.push("城市：" + safeText(ipApi.city, "-"));
+            lines.push("ZIP：" + safeZip(ipApi.zip));
+            lines.push("ISP：" + safeText((cz88Data && cz88Data.isp) || ipApi.isp, "-"));
+            lines.push("组织：" + safeText(ipApi.org, "-"));
+            lines.push("时区：" + safeText(ipApi.timezone, "-"));
+            lines.push("经纬度：" + safeText(ipApi.lat, "-") + " / " + safeText(ipApi.lon, "-"));
             lines.push("主流运营商：" + (risk.majorISP ? "是" : "否"));
             lines.push("");
 
             lines.push("【网络检测】");
-            lines.push("主类型：" + (risk.networkCategory || "-"));
+            lines.push("主类型：" + safeText(risk.networkCategory, "-"));
             lines.push("住宅/主流ISP：" + (risk.isResidential ? "是" : "否"));
             lines.push("住宅底子：" + (risk.isResidentialBase ? "是" : "否"));
             lines.push("ISP底子：" + (risk.isIspBase ? "是" : "否"));
@@ -2620,7 +2651,7 @@ function fetchAll() {
             lines.push("ISP底子候选：" + (risk.ispLikeCandidate ? "是" : "否"));
             lines.push("Transit上游命中：" + (risk.transitUpstreamHit ? "是" : "否"));
             lines.push("Hosting组织特征：" + (risk.hostingLikeOrg ? "是" : "否"));
-            lines.push("原始网络标记：" + ((cz88Data && cz88Data.netWorkType) || "未返回"));
+            lines.push("原始网络标记：" + safeText(cz88Data && cz88Data.netWorkType, "未返回"));
             lines.push("真人概率：" + (risk.humanMeta ? risk.humanMeta.text : "未知（数据不足）"));
             lines.push("代理标记：" + (ipApi.proxy ? "是" : "否"));
             lines.push("托管标记：" + (ipApi.hosting ? "是" : "否"));
@@ -2630,7 +2661,7 @@ function fetchAll() {
             lines.push("综合质量分：" + risk.score + " / 100");
             lines.push("质量判断：" + risk.level);
             lines.push("数据完整度：" + risk.dataCompleteness + "（" + risk.dataCompletenessScore + "）");
-            lines.push("特征：" + risk.tags);
+            lines.push("特征：" + safeText(risk.tags, "无明显异常"));
             lines.push("");
 
             lines.push("【特征推断（相对倾向指数，非真实概率）】");
@@ -2662,9 +2693,9 @@ function fetchAll() {
 
             lines.push("【ASN画像】");
             lines.push("ASN历史风险：" + risk.asnMeta.abuseHistory + "（" + risk.asnMeta.level + "）");
-            lines.push("ASN分层：" + (risk.asnMeta.tier || "-"));
-            lines.push("ASN画像说明：" + risk.asnMeta.reason);
-            lines.push("ASN共享密度：" + risk.asnDensity.density + "（" + (risk.asnDensity.label || "-") + "）");
+            lines.push("ASN分层：" + safeText(risk.asnMeta.tier, "-"));
+            lines.push("ASN画像说明：" + safeText(risk.asnMeta.reason, "无明显异常"));
+            lines.push("ASN共享密度：" + risk.asnDensity.density + "（" + safeText(risk.asnDensity.label, "-") + "）");
             lines.push(line("IP段污染率", segmentPollutionText.text, segmentPollutionText.level));
             lines.push("IP段污染等级：" + risk.segmentPollution.level);
             lines.push("");
