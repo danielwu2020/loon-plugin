@@ -1,16 +1,17 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.90
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.92
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.90 严谨修正版重点：
- * 1. 修复 ISP底子识别时 proxyExit 传参不完整导致的误判
- * 2. 结果缓存改为 IP + 节点名，避免不同节点串缓存
- * 3. Netflix 文案收敛，不再把单点 200 直接写成完整区库
- * 4. strictLibraryFlag 收紧，减少优质企业线/干净云线误杀
- * 5. Hosting/Business 关键词缩窄，减少普通 ISP / Fiber 类误判
+ * 1.92 数据库增强完整版重点：
+ * 1. ASN数据库分层：优质企业线 / 中性商宽 / 小型IDC / 高危IDC
+ * 2. ISP底子 / 企业线 / 小型IDC / 垃圾机房拆分更细
+ * 3. 平台建议实战化：Apple / Google / TikTok / Telegram / Instagram / 金融类
+ * 4. 新增 IG（Instagram）平台建议
+ * 5. 结果缓存按 IP + 节点名，避免串缓存
+ * 6. Netflix / Disney+ / TikTok / YouTube / ChatGPT 检测文案更严谨
  *************************************/
 
 const TIMEOUT = 15000;
@@ -131,6 +132,7 @@ function uniquePush(arr, val) {
 function icon(level) {
   if (level === "ok") return "🟢";
   if (level === "warn") return "🟡";
+  if (level === "midbad") return "🟠";
   return "🔴";
 }
 
@@ -210,6 +212,29 @@ function isMajorISP(org, isp, asnOrg) {
     return str.indexOf(name.toLowerCase()) !== -1;
   });
 }
+
+/*************** ASN 数据库增强 ***************/
+const ASN_DB = {
+  premiumEnterprise: [
+    "eons data", "leased line", "carrier ethernet", "metro ethernet", "mpls", "dedicated internet",
+    "business fiber", "enterprise fiber"
+  ],
+  neutralBusiness: [
+    "exetel", "superloop business", "business broadband", "enterprise", "business", "commercial internet",
+    "fiber", "broadband", "communications", "network"
+  ],
+  smallIdc: [
+    "colo", "colocation", "hosting", "server", "idc", "datacenter", "data center",
+    "vps", "bare metal", "hypervisor", "cloud server", "rack", "cabinet"
+  ],
+  badIdc: [
+    "m247", "ovh", "contabo", "hetzner", "digitalocean", "vultr", "choopa"
+  ],
+  bigCloud: [
+    "oracle cloud", "aws", "amazon technologies", "amazon data services", "ec2",
+    "google cloud", "gcp", "azure", "alibaba cloud", "aliyun", "tencent cloud", "huawei cloud"
+  ]
+};
 
 /*************** 云厂商 / Hosting 数据库 ***************/
 const CLOUD_PROVIDER_RULES = [
@@ -560,7 +585,7 @@ function checkChatGPTWithRisk(risk, cb) {
   );
 }
 
-/*************** 1.90 新增：ISP / ASN / 线路评级 ***************/
+/*************** 识别工具 ***************/
 function isIspLikeText(text) {
   return hasAny(text, [
     "isp", "telecom", "telecommunications", "telecomunicacoes", "telecomunicações",
@@ -616,65 +641,127 @@ function calcSharedISPScore(risk, ipApi, cz88) {
   return clamp(score, 0, 100);
 }
 
+/*************** ASN画像 ***************/
 function getASNMeta(ipApi, risk) {
   const text = lower([ipApi && ipApi.as, ipApi && ipApi.isp, ipApi && ipApi.org].join(" "));
   let abuseHistory = 0;
   const reasons = [];
 
-  if (hasAny(text, ["m247","ovh","contabo","hetzner","digitalocean","vultr","choopa"])) {
-    abuseHistory += 60; uniquePush(reasons, "常见机房/云ASN");
+  if (hasAny(text, ASN_DB.badIdc)) {
+    abuseHistory += 62;
+    uniquePush(reasons, "常见高共享机房/云ASN");
   }
-  if (hasAny(text, ["oracle cloud","aws","amazon technologies","google cloud","gcp","azure"])) {
-    abuseHistory += 50; uniquePush(reasons, "云厂商ASN");
+
+  if (hasAny(text, ASN_DB.bigCloud)) {
+    abuseHistory += 48;
+    uniquePush(reasons, "大云厂商ASN");
   }
-  if (hasAny(text, ["colo","hosting","server","idc","datacenter"])) {
-    abuseHistory += 35; uniquePush(reasons, "Hosting/IDC特征");
+
+  if (hasAny(text, ASN_DB.smallIdc)) {
+    abuseHistory += 30;
+    uniquePush(reasons, "小型IDC/Hosting特征");
   }
-  if (hasAny(text, ["isp","telecom","cable","dsl","fiber","fibra","broadband"])) {
-    abuseHistory -= 20; uniquePush(reasons, "ISP/Cable-DSL底子");
+
+  if (hasAny(text, ASN_DB.neutralBusiness)) {
+    abuseHistory -= 10;
+    uniquePush(reasons, "带ISP/商宽底子");
   }
+
+  if (hasAny(text, ASN_DB.premiumEnterprise)) {
+    abuseHistory -= 16;
+    uniquePush(reasons, "企业专线/商业线路特征");
+  }
+
   if (risk.majorISP) {
-    abuseHistory -= 12; uniquePush(reasons, "主流运营商");
+    abuseHistory -= 12;
+    uniquePush(reasons, "主流运营商");
   }
+
   if (risk.cloudProvider.hit) {
-    abuseHistory += 18; uniquePush(reasons, "云厂商命中");
+    abuseHistory += 16;
+    uniquePush(reasons, "云厂商命中");
   }
+
   if (risk.isASNDatacenter) {
-    abuseHistory += 18; uniquePush(reasons, "ASN机房特征");
+    abuseHistory += 16;
+    uniquePush(reasons, "ASN机房特征");
   }
+
+  if (risk.sharedFeel >= 55) {
+    abuseHistory += 10;
+    uniquePush(reasons, "共享感偏高");
+  } else if (risk.sharedFeel >= 35) {
+    abuseHistory += 5;
+    uniquePush(reasons, "共享感中等");
+  }
+
+  if (risk.nativeFeel <= 40) {
+    abuseHistory += 8;
+    uniquePush(reasons, "原生感偏低");
+  }
+
   if (risk.abuseScore >= 50) {
-    abuseHistory += 10; uniquePush(reasons, "当前IP滥用高");
+    abuseHistory += 12;
+    uniquePush(reasons, "当前IP滥用高");
   } else if (risk.abuseScore >= 20) {
-    abuseHistory += 5; uniquePush(reasons, "当前IP滥用中");
+    abuseHistory += 6;
+    uniquePush(reasons, "当前IP滥用中");
   }
 
   abuseHistory = clamp(abuseHistory, 0, 100);
 
   let level = "clean";
-  if (abuseHistory > 60) level = "bad";
-  else if (abuseHistory > 30) level = "neutral";
+  let tier = "优质专线/干净企业线";
+
+  if (abuseHistory > 70) {
+    level = "bad";
+    tier = "高风险IDC/垃圾机房";
+  } else if (abuseHistory > 50) {
+    level = "bad";
+    tier = "共享IDC/高风险云";
+  } else if (abuseHistory > 30) {
+    level = "neutral";
+    tier = "普通商宽/中性企业线";
+  } else if (abuseHistory > 15) {
+    level = "neutral";
+    tier = "较干净商宽/企业线";
+  }
 
   return {
     abuseHistory: abuseHistory,
     level: level,
+    tier: tier,
     reason: reasons.length ? reasons.join(" / ") : "无明显异常"
   };
 }
 
 function getASNDensity(risk) {
   let density = 0;
-  density += risk.sharedFeel * 0.6;
-  density += risk.airportSuspicion * 0.4;
-  density += risk.platformRisk * 0.2;
 
-  if (risk.networkCategory === "数据中心/服务器") density += 30;
-  if (risk.networkCategory === "机房宽带嫌疑") density += 20;
+  density += risk.sharedFeel * 0.58;
+  density += risk.airportSuspicion * 0.35;
+  density += risk.platformRisk * 0.18;
+  density += risk.vpnProbability * 0.12;
+
+  if (risk.networkCategory === "数据中心/服务器") density += 28;
+  if (risk.networkCategory === "机房宽带嫌疑") density += 18;
   if (risk.networkCategory === "ISP底子 / 共享嫌疑") density += 10;
+  if (risk.networkCategory === "商宽/企业宽带") density += 6;
+
   if (risk.majorISP) density -= 10;
+  if (risk.nativeFeel >= 70) density -= 8;
   if (risk.abuseScore === 0) density -= 4;
+  if (!risk.proxyExit && !risk.cloudProvider.hit && !risk.isASNDatacenter) density -= 4;
+
+  density = clamp(Math.round(density), 0, 100);
+
+  let label = "低密度";
+  if (density > 65) label = "高密度";
+  else if (density > 35) label = "中密度";
 
   return {
-    density: clamp(Math.round(density), 0, 100)
+    density: density,
+    label: label
   };
 }
 
@@ -709,15 +796,13 @@ function getSegmentPollution(risk, ipApi) {
 
 function classifyLineQuality(risk, asnMeta, asnDensity, ipApi) {
   const all = lower([ipApi && ipApi.as, ipApi && ipApi.isp, ipApi && ipApi.org].join(" "));
-  const maybeEnterpriseDedicated =
-    risk.networkCategory === "商宽/企业宽带" ||
-    risk.networkCategory === "机房宽带嫌疑" ||
-    risk.networkCategory === "ISP底子 / 共享嫌疑" ||
+  const looksEnterprise =
     all.indexOf("eons data") !== -1 ||
     all.indexOf("enterprise") !== -1 ||
     all.indexOf("business") !== -1 ||
     all.indexOf("leased line") !== -1 ||
-    all.indexOf("dedicated") !== -1;
+    all.indexOf("dedicated") !== -1 ||
+    all.indexOf("mpls") !== -1;
 
   if (
     !risk.blacklisted &&
@@ -726,45 +811,56 @@ function classifyLineQuality(risk, asnMeta, asnDensity, ipApi) {
     !risk.isASNDatacenter &&
     !risk.proxyExit &&
     risk.abuseScore < 10 &&
-    asnDensity.density <= 30 &&
-    maybeEnterpriseDedicated &&
-    (asnMeta.level === "clean" || asnMeta.level === "neutral") &&
-    risk.nativeFeel >= 55 &&
-    risk.sharedFeel <= 35
+    asnDensity.density <= 28 &&
+    (risk.networkCategory === "商宽/企业宽带" || risk.networkCategory === "ISP底子 / 共享嫌疑" || looksEnterprise) &&
+    risk.nativeFeel >= 58 &&
+    risk.sharedFeel <= 32 &&
+    (asnMeta.level === "clean" || asnMeta.abuseHistory <= 25)
   ) {
     return {
       label: "🟢 优质专线 / 干净企业线",
       level: "good",
-      desc: "更像独立企业出口或较干净专线，不像机场池/垃圾IDC"
-    };
-  }
-
-  if (risk.networkCategory === "ISP底子 / 共享嫌疑") {
-    return {
-      label: "🟡 ISP底子 / 共享嫌疑",
-      level: "mid",
-      desc: "底层更像ISP/家宽/Cable-DSL，但存在共享、池化或机场化使用嫌疑"
+      desc: "更像独立企业出口、专线或较干净商业线路，不像机场池或高共享IDC"
     };
   }
 
   if (
     !risk.blacklisted &&
     !risk.attackInvolved &&
-    asnDensity.density <= 58 &&
     !risk.proxyExit &&
-    risk.networkCategory !== "数据中心/服务器"
+    !risk.cloudProvider.hit &&
+    risk.networkCategory === "商宽/企业宽带" &&
+    asnDensity.density <= 50 &&
+    risk.sharedFeel <= 50
   ) {
     return {
-      label: "🟡 普通商宽 / 中性",
+      label: "🟡 普通商宽 / 中性企业线",
       level: "mid",
-      desc: "偏商宽或企业用途，中性可用，但不建议按优质家宽/独享专线看待"
+      desc: "偏商宽或普通企业用途，整体中性，可用但不建议按优质家宽/独享专线看待"
+    };
+  }
+
+  if (
+    !risk.blacklisted &&
+    !risk.attackInvolved &&
+    (
+      risk.networkCategory === "ISP底子 / 共享嫌疑" ||
+      risk.networkCategory === "机房宽带嫌疑"
+    ) &&
+    asnDensity.density <= 65 &&
+    risk.sharedFeel <= 68
+  ) {
+    return {
+      label: "🟠 小型IDC / 共享专线嫌疑",
+      level: "midbad",
+      desc: "底子不一定很脏，但共享、池化、机场化或轻机房痕迹明显，敏感用途不建议"
     };
   }
 
   return {
     label: "🔴 垃圾机房 / 高风险 IDC",
     level: "bad",
-    desc: "共享密度高、机房/云特征重，像机场池或高风险IDC"
+    desc: "共享密度高、机房/云特征明显，更像机场池、批量代理池或高风险IDC"
   };
 }
 
@@ -975,7 +1071,7 @@ function inferAsnType(ipApi, risk) {
   const all = asText + " " + ispText + " " + orgText;
 
   if (risk.isASNDatacenter || hasAny(all, [
-    "cloud", "hosting", "host", "server", "vps", "colo", "idc", "datacenter",
+    "cloud", "hosting", "server", "vps", "colo", "idc", "datacenter",
     "oracle cloud", "ec2", "google cloud", "gcp", "digitalocean", "linode", "vultr",
     "aliyun", "tencent cloud", "huawei cloud"
   ])) {
@@ -1613,6 +1709,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let googleRisk = 0;
   let tiktokRisk = 0;
   let telegramRisk = 0;
+  let instagramRisk = 0;
   let financeRisk = 0;
 
   appleRisk += Math.round((100 - nativeFeel) * 0.35);
@@ -1653,6 +1750,15 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "机房宽带嫌疑") telegramRisk += 8;
   if (networkCategory === "数据中心/服务器") telegramRisk += 12;
 
+  instagramRisk += Math.round((100 - nativeFeel) * 0.28);
+  instagramRisk += Math.round(sharedFeel * 0.22);
+  instagramRisk += Math.round(platformRisk * 0.18);
+  if (suspiciousProxy) instagramRisk += 16;
+  if (networkCategory === "机房宽带嫌疑") instagramRisk += 12;
+  if (networkCategory === "数据中心/服务器") instagramRisk += 18;
+  if (networkCategory === "运营商移动网络" || networkCategory === "移动数据") instagramRisk -= 4;
+  if (networkCategory === "住宅宽带" || networkCategory === "运营商ISP网络") instagramRisk -= 4;
+
   financeRisk += Math.round(riskValue * 0.4);
   financeRisk += Math.round((100 - nativeFeel) * 0.3);
   financeRisk += Math.round(sharedFeel * 0.25);
@@ -1673,24 +1779,28 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (networkCategory === "ISP底子 / 共享嫌疑") {
     appleRisk = Math.max(appleRisk, 38);
     googleRisk = Math.max(googleRisk, 32);
+    instagramRisk = Math.max(instagramRisk, 34);
     financeRisk = Math.max(financeRisk, 48);
   }
   if ((networkCategory === "运营商移动网络" || networkCategory === "移动数据") &&
       (associationRisk >= 35 || airportSuspicion >= 35)) {
     appleRisk = Math.max(appleRisk, 40);
     googleRisk = Math.max(googleRisk, 35);
+    instagramRisk = Math.max(instagramRisk, 36);
     financeRisk = Math.max(financeRisk, 55);
   }
 
   if (networkCategory === "机房宽带嫌疑") {
     appleRisk = Math.max(appleRisk, 45);
     googleRisk = Math.max(googleRisk, 40);
+    instagramRisk = Math.max(instagramRisk, 42);
     financeRisk = Math.max(financeRisk, 60);
   }
 
   if (networkCategory === "数据中心/服务器") {
     appleRisk = Math.max(appleRisk, 60);
     googleRisk = Math.max(googleRisk, 55);
+    instagramRisk = Math.max(instagramRisk, 52);
     financeRisk = Math.max(financeRisk, 75);
   }
 
@@ -1699,27 +1809,137 @@ function analyzeRisk(ipApi, cz88, abuse) {
     googleRisk -= 4;
     tiktokRisk -= 4;
     telegramRisk -= 4;
+    instagramRisk -= 4;
   }
 
   appleRisk = clamp(appleRisk, 0, 100);
   googleRisk = clamp(googleRisk, 0, 100);
   tiktokRisk = clamp(tiktokRisk, 0, 100);
   telegramRisk = clamp(telegramRisk, 0, 100);
+  instagramRisk = clamp(instagramRisk, 0, 100);
   financeRisk = clamp(financeRisk, 0, 100);
 
+  let appleAdvice = adviceByRisk(appleRisk, "推荐", "谨慎", "不建议");
+  let googleAdvice = adviceByRisk(googleRisk, "推荐", "可用", "谨慎");
+  let tiktokAdvice = adviceByRisk(tiktokRisk, "推荐", "可用", "谨慎");
+  let telegramAdvice = adviceByRisk(telegramRisk, "推荐", "可用", "谨慎");
+  let instagramAdvice = adviceByRisk(instagramRisk, "推荐", "可用", "谨慎");
+  let financeAdvice = adviceByRisk(financeRisk, "可用", "谨慎", "不建议");
+
+  if (
+    networkCategory === "数据中心/服务器" ||
+    proxyExit ||
+    highRiskProxy ||
+    sharedFeel >= 55
+  ) {
+    appleAdvice = "不建议";
+  } else if (
+    networkCategory === "机房宽带嫌疑" ||
+    networkCategory === "ISP底子 / 共享嫌疑" ||
+    nativeFeel < 55
+  ) {
+    appleAdvice = "谨慎";
+  }
+
+  if (
+    highRiskProxy ||
+    blacklisted ||
+    attackInvolved ||
+    networkCategory === "数据中心/服务器"
+  ) {
+    googleAdvice = "谨慎";
+  } else if (
+    networkCategory === "运营商ISP网络" ||
+    networkCategory === "住宅宽带" ||
+    (networkCategory === "商宽/企业宽带" && sharedFeel <= 35 && nativeFeel >= 58)
+  ) {
+    googleAdvice = "推荐";
+  }
+
+  if (
+    networkCategory === "运营商移动网络" ||
+    networkCategory === "移动数据" ||
+    networkCategory === "住宅宽带" ||
+    networkCategory === "运营商ISP网络"
+  ) {
+    if (!proxyExit && sharedFeel <= 45) tiktokAdvice = "推荐";
+  } else if (
+    networkCategory === "数据中心/服务器" ||
+    sharedFeel >= 60
+  ) {
+    tiktokAdvice = "谨慎";
+  }
+
+  if (blacklisted || attackInvolved) {
+    telegramAdvice = "谨慎";
+  } else if (
+    !proxyExit &&
+    networkCategory !== "数据中心/服务器" &&
+    sharedFeel <= 50
+  ) {
+    telegramAdvice = "推荐";
+  }
+
+  if (
+    networkCategory === "数据中心/服务器" ||
+    highRiskProxy ||
+    blacklisted ||
+    attackInvolved
+  ) {
+    instagramAdvice = "谨慎";
+  } else if (
+    (networkCategory === "运营商移动网络" || networkCategory === "移动数据" || networkCategory === "住宅宽带" || networkCategory === "运营商ISP网络") &&
+    !proxyExit &&
+    sharedFeel <= 45 &&
+    nativeFeel >= 52
+  ) {
+    instagramAdvice = "推荐";
+  } else if (
+    networkCategory === "ISP底子 / 共享嫌疑" ||
+    networkCategory === "机房宽带嫌疑" ||
+    sharedFeel >= 50 ||
+    nativeFeel < 50
+  ) {
+    instagramAdvice = "谨慎";
+  }
+
+  if (
+    proxyExit ||
+    highRiskProxy ||
+    blacklisted ||
+    attackInvolved ||
+    networkCategory === "数据中心/服务器" ||
+    networkCategory === "机房宽带嫌疑"
+  ) {
+    financeAdvice = "不建议";
+  } else if (
+    networkCategory === "ISP底子 / 共享嫌疑" ||
+    networkCategory === "移动数据" ||
+    networkCategory === "运营商移动网络" ||
+    sharedFeel >= 40 ||
+    nativeFeel < 58
+  ) {
+    financeAdvice = "谨慎";
+  } else {
+    financeAdvice = "可用";
+  }
+
   const platformAdvice = {
-    apple: adviceByRisk(appleRisk, "推荐", "谨慎", "不建议"),
-    google: adviceByRisk(googleRisk, "推荐", "可用", "谨慎"),
-    tiktok: adviceByRisk(tiktokRisk, "推荐", "可用", "谨慎"),
-    telegram: adviceByRisk(telegramRisk, "推荐", "可用", "谨慎"),
-    finance: adviceByRisk(financeRisk, "可用", "谨慎", "不建议")
+    apple: appleAdvice,
+    google: googleAdvice,
+    tiktok: tiktokAdvice,
+    telegram: telegramAdvice,
+    instagram: instagramAdvice,
+    finance: financeAdvice
   };
 
   const asnMeta = getASNMeta(ipApi, {
     majorISP: majorISP,
     cloudProvider: cloudProvider,
     isASNDatacenter: isASNDatacenter,
-    abuseScore: abuseScore
+    abuseScore: abuseScore,
+    sharedFeel: sharedFeel,
+    nativeFeel: nativeFeel
   });
 
   const sharedISPScore = calcSharedISPScore({
@@ -1739,9 +1959,14 @@ function analyzeRisk(ipApi, cz88, abuse) {
     sharedFeel: sharedFeel,
     airportSuspicion: airportSuspicion,
     platformRisk: platformRisk,
+    vpnProbability: vpnProbability,
     networkCategory: networkCategory,
     majorISP: majorISP,
-    abuseScore: abuseScore
+    abuseScore: abuseScore,
+    nativeFeel: nativeFeel,
+    proxyExit: proxyExit,
+    cloudProvider: cloudProvider,
+    isASNDatacenter: isASNDatacenter
   });
 
   const segmentPollution = getSegmentPollution({
@@ -1781,28 +2006,31 @@ function analyzeRisk(ipApi, cz88, abuse) {
   if (platformAssociationLevel === "高") platformRiskConclusion = "平台关联压力高";
 
   let finalConclusion = "整体可正常使用";
+
   if (attackInvolved || (blacklisted && abuseScore >= 50)) {
     finalConclusion = "存在明确硬风险，不建议用于敏感场景";
   } else if (ipApi.proxy === true || networkCategory === "数据中心/服务器") {
     finalConclusion = "偏机房/代理/托管出口，不建议用于注册、主号、金融等敏感用途";
   } else if (networkCategory === "机房宽带嫌疑") {
-    finalConclusion = "存在一定机房宽带/托管嫌疑，普通浏览可用，注册和主号场景谨慎";
+    finalConclusion = "存在轻机房或共享专线嫌疑，普通浏览可用，但注册、主号、金融场景不建议";
   } else if (networkCategory === "ISP底子 / 共享嫌疑") {
-    finalConclusion = "底层更像ISP/家宽/Cable-DSL，但存在共享或机场化使用嫌疑；普通浏览和流媒体可用，注册、主号、金融场景谨慎";
+    finalConclusion = "底层更像ISP/家宽/Cable-DSL，但共享、池化或机场化嫌疑存在；日常和流媒体可用，敏感场景谨慎";
+  } else if (networkCategory === "商宽/企业宽带") {
+    if (lineQuality.level === "good") {
+      finalConclusion = "更像干净企业线/优质专线，普通与中敏感场景表现通常不错，但仍不建议等同纯净独享家宽";
+    } else {
+      finalConclusion = "偏普通商宽/企业用途，中性可用，不建议按纯净家宽理解";
+    }
   } else if (networkCategory === "运营商移动网络" || networkCategory === "移动数据") {
     if (platformAssociationLevel === "高") {
-      finalConclusion = "移动网络整体不脏，但平台关联压力较高，敏感场景谨慎";
-    } else if (platformAssociationLevel === "中") {
-      finalConclusion = "偏干净移动网络，日常使用良好，但不建议按低关联独享住宅看待";
+      finalConclusion = "移动网络本身不一定脏，但平台关联压力偏高，敏感场景谨慎";
     } else {
-      finalConclusion = "偏干净移动网络，整体可正常使用";
+      finalConclusion = "偏干净移动网络，日常使用通常没大问题";
     }
   } else if (networkCategory === "运营商ISP网络") {
     finalConclusion = "整体较稳，接近正常运营商家宽/ISP出口，可正常使用";
-  } else if (networkCategory === "商宽/企业宽带") {
-    finalConclusion = "偏商宽/专线或企业用途，不建议按纯净家宽看待；普通浏览可行，注册、主号、金融场景谨慎";
   } else if (score >= 85 && networkCategory === "住宅宽带") {
-    finalConclusion = "偏优质住宅，日常使用问题不大";
+    finalConclusion = "偏优质住宅，日常、平台、流媒体场景 generally 都比较稳";
   }
 
   return {
@@ -1850,6 +2078,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     googleRisk,
     tiktokRisk,
     telegramRisk,
+    instagramRisk,
     financeRisk,
     platformAdvice,
     cloudProvider,
@@ -2019,8 +2248,9 @@ function fetchAll() {
 
             lines.push("【ASN画像】");
             lines.push("ASN历史风险：" + risk.asnMeta.abuseHistory + "（" + risk.asnMeta.level + "）");
+            lines.push("ASN分层：" + (risk.asnMeta.tier || "-"));
             lines.push("ASN画像说明：" + risk.asnMeta.reason);
-            lines.push("ASN共享密度：" + risk.asnDensity.density);
+            lines.push("ASN共享密度：" + risk.asnDensity.density + "（" + (risk.asnDensity.label || "-") + "）");
             lines.push(line("IP段污染率", segmentPollutionText.text, segmentPollutionText.level));
             lines.push("IP段污染等级：" + risk.segmentPollution.level);
             lines.push("");
@@ -2030,7 +2260,7 @@ function fetchAll() {
             lines.push("共享型ISP判断：" + (risk.sharedISPScore <= 30 ? "低" : risk.sharedISPScore <= 60 ? "中" : "高"));
             lines.push("");
 
-            lines.push("【线路评级（基于当前特征推断）】");
+            lines.push("【线路评级 / 实战归类】");
             lines.push(risk.lineQuality.label);
             lines.push("说明：" + risk.lineQuality.desc);
             lines.push("");
@@ -2100,6 +2330,7 @@ function fetchAll() {
             lines.push("谷歌：" + risk.platformAdvice.google + "（风险 " + risk.googleRisk + "）");
             lines.push("TikTok：" + risk.platformAdvice.tiktok + "（风险 " + risk.tiktokRisk + "）");
             lines.push("Telegram：" + risk.platformAdvice.telegram + "（风险 " + risk.telegramRisk + "）");
+            lines.push("Instagram：" + risk.platformAdvice.instagram + "（风险 " + risk.instagramRisk + "）");
             lines.push("金融类：" + risk.platformAdvice.finance + "（风险 " + risk.financeRisk + "）");
             lines.push("");
 
