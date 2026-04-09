@@ -1,19 +1,18 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.97
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.98
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.97 完整精修终版重点：
- * 1. ASN机房识别改为强品牌直判 + 通用词组合判定，杜绝 hosting/idc/vps 单词单判
- * 2. 云厂商命中 与 云厂商机房化倾向拆分展示，逻辑/文案完全对齐
- * 3. isASNDatacenter 不再被 cloudProvider.hit 直接硬触发，改为云基础设施信号辅助
- * 4. 共享型ISP评分收紧，business/enterprise/专线不再粗暴抬高
- * 5. 伪住宅风险仅在住宅类外观场景重点计算，非住宅场景显著降权并限顶
- * 6. 共享商宽/ISP嫌疑定义更符合实际展示语义
- * 7. strictLibraryFlag 对云命中场景改为更保守的严格库标记策略
- * 8. 展示口径与判断口径完全一致，减少“写法说保守、展示又偏硬”的矛盾
+ * 1.98 精修整合版重点：
+ * 1. 修复 ZIP 显示 bug
+ * 2. ASN 机房识别语义进一步收紧，避免“有 AS 号就像机房”
+ * 3. Netflix 检测不再把 404 粗暴解释为“仅自制”
+ * 4. Disney / TikTok / YouTube / ChatGPT 展示口径进一步保守化
+ * 5. 共享型 ISP 对移动网络做降权，减少误伤
+ * 6. 本地模拟结果展示改为“拟合估计”，避免误导成真实 API
+ * 7. 保持 1.97 的整体判断框架，同时修正文案与逻辑口径
  *************************************/
 
 const TIMEOUT = 15000;
@@ -198,8 +197,8 @@ function matchHostingLikeOrg(text) {
 }
 
 /**
- * 1.97 精修：
- * ASN机房判断不再允许 hosting/datacenter/idc/vps 单词单独触发
+ * 1.98 精修：
+ * ASN机房判断不允许 hosting/datacenter/idc/vps 单词单独触发
  * 改为：强品牌直判 + 通用词(core) + infra 组合命中
  */
 function matchASNDatacenterText(text) {
@@ -566,15 +565,16 @@ function checkNetflix(cb) {
   ];
 
   let idx = 0;
-  let onlyOriginal = false;
+  let blocked = 0;
 
   function next() {
     if (idx >= tests.length) {
-      if (onlyOriginal) return cb("仅基础站点可达，非自制目录未确认", "warn");
-      return cb("不可用", "fail");
+      if (blocked >= tests.length) return cb("样本均不可访问", "fail");
+      return cb("部分样本失败（未确认完整解锁）", "warn");
     }
 
     const item = tests[idx++];
+
     httpGet(
       {
         url: "https://www.netflix.com/title/" + item.id,
@@ -585,17 +585,21 @@ function checkNetflix(cb) {
       },
       function (err, resp) {
         if (err || !resp) {
-          if (idx >= tests.length) return cb("检测失败", "fail");
+          blocked++;
           return next();
         }
+
         const code = resp.status || resp.statusCode || 0;
 
-        if (code === 200) return cb("检测样本可访问（疑似非自制可用 / " + item.region + "）", "ok");
-        if (code === 404) {
-          onlyOriginal = true;
+        if (code === 200) {
+          return cb("样本可访问（" + item.region + "）", "ok");
+        }
+
+        if (code === 403 || code === 404) {
+          blocked++;
           return next();
         }
-        if (code === 403) return cb("被拒绝", "fail");
+
         return next();
       }
     );
@@ -620,7 +624,7 @@ function checkDisney(cb) {
 
       if (code === 200 || code === 301 || code === 302) {
         if (/not available in your region/i.test(body)) return cb("当前地区不可用", "fail");
-        return cb("网页可达（近似）", "ok");
+        return cb("网页可达（近似，非账号级验证）", "warn");
       }
       if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
@@ -641,7 +645,7 @@ function checkTikTok(cb) {
       if (err || !resp) return cb("检测失败", "fail");
       const code = resp.status || resp.statusCode || 0;
       const body = data || "";
-      if (code === 200 && body) return cb("站点可达（近似）", "ok");
+      if (code === 200 && body) return cb("首页可达（不代表推荐流/登录正常）", "warn");
       if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
     }
@@ -660,17 +664,15 @@ function checkYouTube(cb) {
     function (err, resp, data) {
       if (err || !resp || !data) return cb("检测失败", "fail");
       const body = data || "";
-      const code = resp.status || resp.statusCode || 0;
-
       const match = body.match(/"countryCode":"(.*?)"/) || body.match(/"GL":"(.*?)"/);
+
       if (match && match[1]) return cb("Premium地区 " + match[1], "ok");
 
-      if (/youtube premium is not available/i.test(body)) {
+      if (/youtube premium is not available/i.test(body) || /not available/i.test(body)) {
         return cb("当前地区不可用", "warn");
       }
 
-      if (code === 200) return cb("可访问", "warn");
-      return cb("未知(" + code + ")", "warn");
+      return cb("网页可达（未识别地区）", "warn");
     }
   );
 }
@@ -739,7 +741,7 @@ function checkChatGPTWithRisk(risk, cb) {
           }
 
           if (code2 === 200 || code2 === 301 || code2 === 302) {
-            return cb("网页可访问（未识别地区）", "warn");
+            return cb("网页可访问（未识别地区，非真实解锁结论）", "warn");
           }
 
           if (code2 === 403) {
@@ -810,9 +812,10 @@ function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
 }
 
 /**
- * 1.97 精修：
+ * 1.98 精修：
  * 专线 / business / enterprise 只有在共享感、原生低、平台风险高等背景下才弱加分
  * 不再直接粗暴抬高共享ISP评分
+ * 对移动网络额外降权，减少误伤
  */
 function calcSharedISPScore(risk, ipApi, cz88) {
   let score = 0;
@@ -840,6 +843,13 @@ function calcSharedISPScore(risk, ipApi, cz88) {
     if (risk.sharedFeel >= 45 || risk.airportSuspicion >= 35) {
       score += 4;
     }
+  }
+
+  if (
+    risk.networkCategory === "运营商移动网络" ||
+    risk.networkCategory === "移动数据"
+  ) {
+    score -= 10;
   }
 
   if (risk.majorISP) score -= 8;
@@ -1331,8 +1341,6 @@ function inferIpTypeLabel(risk, ipApi, cz88) {
   if (ipApi.proxy) return "代理出口";
   const raw = String((cz88 && cz88.netWorkType) || "");
   return raw || "普通网络";
-}
-
 /*************** 核心分析 ***************/
 function analyzeRisk(ipApi, cz88, abuse) {
   const rawNetwork = String((cz88 && cz88.netWorkType) || "");
@@ -1376,7 +1384,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const allAsnText = asText + " " + ispText + " " + orgText;
 
   /**
-   * 1.97 精修：
+   * 1.98 精修：
    * 云厂商品牌命中 与 云厂商机房化倾向拆开
    */
   const cloudHitOnly = cloudProvider.hit;
@@ -1390,20 +1398,25 @@ function analyzeRisk(ipApi, cz88, abuse) {
       matchASNDatacenterText(allAsnText)
     );
 
+  /**
+   * 1.98 精修：
+   * 不再使用 “有 AS 号 + 文本命中” 这种几乎恒成立的前置条件
+   * 直接改为“云基础设施信号”或“明显 ASN/ORG/ISP 机房语义且非主流 ISP / 非住宅底子”
+   */
+  const isASNResidential =
+    hasAnySafe(allAsnText, ["broadband", "residential", "cable", "fiber", "ftth", "家庭", "住宅", "家宽", "dsl"]) &&
+    !isMobile &&
+    !isBusinessLine;
+
   const isASNDatacenter =
-    /(^|\s)as\d+/.test(asText) &&
+    cloudInfraSignal ||
     (
-      cloudInfraSignal ||
-      matchASNDatacenterText(allAsnText)
+      matchASNDatacenterText(allAsnText) &&
+      !majorISP &&
+      !isASNResidential
     );
 
   const cloudNativeDatacenter = cloudInfraSignal;
-
-  const isASNResidential =
-    hasAnySafe(allAsnText, ["broadband", "residential", "cable", "fiber", "ftth", "家庭", "住宅", "家宽", "dsl"]) &&
-    !isASNDatacenter &&
-    !isMobile &&
-    !isBusinessLine;
 
   const transitUpstreamHit = matchTransitUpstream(allAsnText, majorISP);
   const hostingLikeOrg = matchHostingLikeOrg(orgText + " " + ispText);
@@ -1437,8 +1450,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     !majorISP &&
     /\bbusiness\b/i.test(orgText) &&
     /\b(network|telecom|communications?)\b/i.test(orgText + " " + ispText);
-
-  const orgLooksBusiness = orgBusinessStrong || orgBusinessWeak;
 
   let abuseScore = 0;
   let totalReports = 0;
@@ -1728,7 +1739,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   else if (dataCompletenessScore >= 50) dataCompleteness = "中";
   else dataCompleteness = "低";
 
-  /*************** 特征推断模块（1.97 完整精修版） ***************/
+  /*************** 特征推断模块 ***************/
   let residentialScore = 40;
   let businessScore = 26;
   let datacenterScore = 22;
@@ -1823,11 +1834,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
     rawLower.indexOf("cable") !== -1 ||
     rawLower.indexOf("dsl") !== -1;
 
-  /**
-   * 1.97 精修：
-   * 伪住宅风险仅在住宅外观场景重点计算
-   * 非住宅场景默认低起点、弱加权、40封顶
-   */
   let fakeResidentialRisk = residentialLikeSurface ? 18 : 0;
 
   if (orgBusinessStrong) fakeResidentialRisk += residentialLikeSurface ? 22 : 8;
@@ -2003,10 +2009,6 @@ function analyzeRisk(ipApi, cz88, abuse) {
       )
     );
 
-  /**
-   * 1.97 精修：
-   * 云厂商命中只有在“确实机房化/宽带嫌疑/风险较高”时才推动严格库标记
-   */
   if (
     !strictLibraryExempt &&
     (
@@ -2303,7 +2305,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
     proxyExit: proxyExit,
     cloudNativeDatacenter: cloudNativeDatacenter,
     isASNDatacenter: isASNDatacenter,
-    majorISP: majorISP
+    majorISP: majorISP,
+    networkCategory: networkCategory
   }, ipApi, cz88);
 
   const asnDensity = getASNDensity({
@@ -2559,7 +2562,7 @@ function fetchAll() {
             lines.push("国家/地区：" + (ipApi.country || "-"));
             lines.push("地区：" + (ipApi.regionName || "-"));
             lines.push("城市：" + (ipApi.city || "-"));
-            lines.push("ZIP：" + (ipApi.zip || + ""));
+            lines.push("ZIP：" + (ipApi.zip || ""));
             lines.push("ISP：" + ((cz88Data && cz88Data.isp) || ipApi.isp || "-"));
             lines.push("组织：" + (ipApi.org || "-"));
             lines.push("时区：" + (ipApi.timezone || "-"));
@@ -2667,11 +2670,11 @@ function fetchAll() {
             lines.push(line("cz88", cz88Score.text, cz88Score.level));
             lines.push("");
 
-            lines.push("【本地风格估计（非真实API结果）】");
-            lines.push(line("IPPure风格估计", simulated.ippure.text, simulated.ippure.level));
-            lines.push(line("Scamalytics风格估计", simulated.scamalytics.text, simulated.scamalytics.level));
-            lines.push(line("IP2Location风格估计", simulated.ip2location.text, simulated.ip2location.level));
-            lines.push(line("ipregistry风格估计", simulated.ipregistry.text, simulated.ipregistry.level));
+            lines.push("【本地拟合估计（仅供风格参考，非官方结果）】");
+            lines.push(line("IPPure风格拟合", simulated.ippure.text, simulated.ippure.level));
+            lines.push(line("Scamalytics风格拟合", simulated.scamalytics.text, simulated.scamalytics.level));
+            lines.push(line("IP2Location风格拟合", simulated.ip2location.text, simulated.ip2location.level));
+            lines.push(line("ipregistry风格拟合", simulated.ipregistry.text, simulated.ipregistry.level));
             lines.push("");
 
             lines.push("【硬风险判定】");
