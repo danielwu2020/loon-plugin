@@ -1,16 +1,16 @@
 /*************************************
- * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.89
+ * 节点详情查询 Ultimate（完整细节优化版 - GPT/Netflix增强完整版）-1.90
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 1.89 新增重点：
- * 1. ISP底子保护：专线 / Cable-DSL / ISP 不再轻易误判为IDC
- * 2. 共享型ISP / 机场嫌疑 与 纯机房IDC拆分
- * 3. ASN历史风险画像 / ASN共享密度 / IP段污染率模拟
- * 4. 线路评级三档：优质专线 / 中性 / 高风险IDC
- * 5. 平台风控建议进一步细化（Apple / Google / 金融类）
+ * 1.90 严谨修正版重点：
+ * 1. 修复 ISP底子识别时 proxyExit 传参不完整导致的误判
+ * 2. 结果缓存改为 IP + 节点名，避免不同节点串缓存
+ * 3. Netflix 文案收敛，不再把单点 200 直接写成完整区库
+ * 4. strictLibraryFlag 收紧，减少优质企业线/干净云线误杀
+ * 5. Hosting/Business 关键词缩窄，减少普通 ISP / Fiber 类误判
  *************************************/
 
 const TIMEOUT = 15000;
@@ -190,7 +190,7 @@ function getAbuseCacheKey(ip) {
 }
 
 function getResultCacheKey(ip) {
-  return "NODE_CHECK_RESULT_CACHE_" + ip;
+  return "NODE_CHECK_RESULT_CACHE_" + ip + "_" + encodeURIComponent(NODE_NAME || "default");
 }
 
 /*************** 主流运营商白名单 ***************/
@@ -242,7 +242,7 @@ const SUSPICIOUS_TRANSIT_UPSTREAMS = [
 ];
 
 const HOSTING_RESELLER_KEYWORDS = [
-  "hosting", "host", "server", "datacenter", "data center", "idc", "vps", "colo",
+  "hosting", "server", "datacenter", "data center", "idc", "vps", "colo",
   "colocation", "dedicated", "bare metal", "virtual machine", "cloud server",
   "kvm", "hypervisor", "rack", "cabinet"
 ];
@@ -397,7 +397,7 @@ function checkNetflix(cb) {
         }
         const code = resp.status || resp.statusCode || 0;
 
-        if (code === 200) return cb("完整解锁（近似 / " + item.region + "）", "ok");
+        if (code === 200) return cb("非自制内容可访问（近似 / " + item.region + "）", "ok");
         if (code === 404) {
           onlyOriginal = true;
           return next();
@@ -427,7 +427,7 @@ function checkDisney(cb) {
 
       if (code === 200 || code === 301 || code === 302) {
         if (/not available in your region/i.test(body)) return cb("当前地区不可用", "fail");
-        return cb("可访问（近似）", "ok");
+        return cb("网页可达（近似）", "ok");
       }
       if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
@@ -448,7 +448,7 @@ function checkTikTok(cb) {
       if (err || !resp) return cb("检测失败", "fail");
       const code = resp.status || resp.statusCode || 0;
       const body = data || "";
-      if (code === 200 && body) return cb("可访问（近似）", "ok");
+      if (code === 200 && body) return cb("站点可达（近似）", "ok");
       if (code === 403) return cb("被拒绝", "fail");
       return cb("未知(" + code + ")", "warn");
     }
@@ -560,7 +560,7 @@ function checkChatGPTWithRisk(risk, cb) {
   );
 }
 
-/*************** 1.89 新增：ISP / ASN / 线路评级 ***************/
+/*************** 1.90 新增：ISP / ASN / 线路评级 ***************/
 function isIspLikeText(text) {
   return hasAny(text, [
     "isp", "telecom", "telecommunications", "telecomunicacoes", "telecomunicações",
@@ -1060,7 +1060,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const isASNDatacenter =
     /(^|\s)as\d+/.test(asText) &&
     hasAny(allAsnText, [
-      "cloud", "hosting", "host", "server", "vps", "colo", "idc", "datacenter",
+      "cloud", "hosting", "server", "vps", "colo", "idc", "datacenter",
       "oracle cloud", "ec2", "google cloud", "gcp", "digitalocean", "linode", "vultr",
       "aliyun", "tencent cloud", "huawei cloud"
     ]);
@@ -1097,8 +1097,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const orgLooksBusiness =
     !majorISP &&
     hasAny(orgText, [
-      "llc", "inc", "ltd", "limited", "company", "corp", "corporation",
-      "enterprise", "business", "aviation", "studio", "fiber", "state"
+      "enterprise", "business", "aviation", "studio"
     ]);
 
   let abuseScore = 0;
@@ -1578,8 +1577,8 @@ function analyzeRisk(ipApi, cz88, abuse) {
     ipApi.proxy === true ||
     blacklisted ||
     attackInvolved ||
-    (cloudProvider.hit && riskValue >= 55) ||
-    (isASNDatacenter && platformRisk >= 60)
+    (cloudProvider.hit && riskValue >= 55 && sharedFeel >= 35) ||
+    (isASNDatacenter && platformRisk >= 60 && nativeFeel <= 55)
   ) {
     strictLibraryFlag = true;
   }
@@ -1991,7 +1990,7 @@ function fetchAll() {
             lines.push("特征：" + risk.tags);
             lines.push("");
 
-            lines.push("【大模型检测】");
+            lines.push("【特征推断】");
             lines.push("家庭宽带概率：" + risk.residentialProbability + "%");
             lines.push("商业宽带概率：" + risk.businessProbability + "%");
             lines.push("机房宽带概率：" + risk.datacenterProbability + "%");
@@ -2031,7 +2030,7 @@ function fetchAll() {
             lines.push("共享型ISP判断：" + (risk.sharedISPScore <= 30 ? "低" : risk.sharedISPScore <= 60 ? "中" : "高"));
             lines.push("");
 
-            lines.push("【线路评级】");
+            lines.push("【线路评级（基于当前特征推断）】");
             lines.push(risk.lineQuality.label);
             lines.push("说明：" + risk.lineQuality.desc);
             lines.push("");
