@@ -1,0 +1,17 @@
+# EA SPORTS FC Mobile - Loon Remote Rule
+# Rules selected from blackmatrix7 EA.list; no IP-CIDR.
+# ea.com covers observed FC Mobile hosts including:
+# fcm23.prod.eacn.ea.com, fcm23-prod-webevent.prod.eacn.ea.com,
+# ext-*.blaze.ea.com, and *.blazeredirector.ea.com.
+# These hosts do not need separate rules.
+
+DOMAIN-SUFFIX,ea.com
+DOMAIN-SUFFIX,eafootballworld.com
+DOMAIN-SUFFIX,eamobile.com
+DOMAIN-SUFFIX,easports.com
+DOMAIN-SUFFIX,easportsfootball.com
+DOMAIN-SUFFIX,easportsfootballclub.com
+DOMAIN,eaassets-a.akamaihd.net
+
+# Supplemental EA mobile services
+DOMAIN-SUFFIX,tnt-ea.com
