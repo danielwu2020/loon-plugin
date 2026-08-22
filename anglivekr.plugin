@@ -1,6 +1,6 @@
 #!name=AngelLive 韩国地区分流
 #!desc=AngelLive 韩国地区分流：PandaTV、CHZZK 走韩国策略，通用视频及静态图片 CDN 直连。SOOP 已拆分为独立直连插件。安装时请把 PROXY 映射到韩国地区策略组。
-#!author=dx
+#!author=OpenAI Codex
 #!homepage=https://plugins.carsonn.works
 #!date=2026-08-22
 [Rule]
