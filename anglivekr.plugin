@@ -1,0 +1,25 @@
+#!name=AngelLive 韩国地区分流
+#!desc=AngelLive 的 SOOP、PandaTV、CHZZK 分流规则；通用视频及静态图片 CDN 直连。安装时请把 PROXY 映射到韩国地区策略组。
+#!author=OpenAI Codex
+#!homepage=https://plugins.carsonn.works
+#!date=2026-08-22
+[Rule]
+# 可直连 CDN（两个地区插件保持一致）
+DOMAIN-SUFFIX,live-video.net,DIRECT
+DOMAIN,nng-phinf.pstatic.net,DIRECT
+DOMAIN,ssl.pstatic.net,DIRECT
+DOMAIN,livecloud-thumb.akamaized.net,DIRECT
+# SOOP（原 AfreecaTV）
+DOMAIN-SUFFIX,sooplive.com,PROXY
+DOMAIN-SUFFIX,sooplive.co.kr,PROXY
+DOMAIN-SUFFIX,afreecatv.com,PROXY
+# PandaTV（韩国）
+DOMAIN-SUFFIX,pandalive.co.kr,PROXY
+DOMAIN,chat-ws.neolive.kr,PROXY
+# CHZZK
+DOMAIN,chzzk.naver.com,PROXY
+DOMAIN,api.chzzk.naver.com,PROXY
+DOMAIN,comm-api.game.naver.com,PROXY
+DOMAIN,kr-ss1.chat.naver.com,PROXY
+DOMAIN,apis.naver.com,PROXY
+DOMAIN,livecloud.akamaized.net,PROXY
