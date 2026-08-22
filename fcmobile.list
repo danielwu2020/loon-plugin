@@ -1,3 +1,9 @@
+#!name=Fcmobile规则
+#!desc=fcmobile分流规则
+#!author=dx
+#!homepage=https://www.ea.com/zh-hans/games/ea-sports-fc/fc-mobile
+#!date=2026-08-22
+[Rule]
 # FC Mobile 登录、账号、活动和游戏接口
 DOMAIN-SUFFIX,ea.com,PROXY
 DOMAIN-SUFFIX,easports.com,PROXY
