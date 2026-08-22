@@ -1,0 +1,20 @@
+#!name=Fcmobile规则
+#!desc=fcmobile分流规则
+#!author=dx
+#!homepage=https://www.ea.com/zh-hans/games/ea-sports-fc/fc-mobile
+#!date=2026-08-22
+[Rule]
+# FC Mobile 登录、账号、活动和游戏接口
+DOMAIN-SUFFIX,ea.com,PROXY
+DOMAIN-SUFFIX,easports.com,PROXY
+DOMAIN-SUFFIX,eamobile.com,PROXY
+DOMAIN-SUFFIX,electronicarts.com,PROXY
+DOMAIN-SUFFIX,tnt-ea.com,PROXY
+
+# 游戏资源与更新
+DOMAIN-SUFFIX,eaassets-a.akamaihd.net,PROXY
+DOMAIN-SUFFIX,origin-a.akamaihd.net,PROXY
+DOMAIN-SUFFIX,origin.com,PROXY
+
+# 实时对战兜底：处理服务器直接下发 IP 的 UDP/STUN/QUIC 连接
+AND,((OR,((PROTOCOL,UDP),(PROTOCOL,STUN),(PROTOCOL,QUIC))),(NOT,((DEST-PORT,53)))),PROXY
