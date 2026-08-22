@@ -1,0 +1,23 @@
+#!name=AngelLive 其他地区分流
+#!desc=AngelLive 的 Kick、BIGO LIVE 及插件目录分流规则；通用视频及静态图片 CDN 直连。安装时请把 PROXY 映射到其他地区策略组。
+#!author=OpenAI Codex
+#!homepage=https://plugins.carsonn.works
+#!date=2026-08-22
+[Rule]
+# 可直连 CDN（两个地区插件保持一致）
+DOMAIN-SUFFIX,live-video.net,DIRECT
+DOMAIN,nng-phinf.pstatic.net,DIRECT
+DOMAIN,ssl.pstatic.net,DIRECT
+DOMAIN,livecloud-thumb.akamaized.net,DIRECT
+# AngelLive 插件目录及资源
+DOMAIN,plugins.carsonn.works,PROXY
+# Kick
+DOMAIN-SUFFIX,kick.com,PROXY
+DOMAIN,ttvtoken.a1015403703-db6.workers.dev,PROXY
+DOMAIN,ws-us2.pusher.com,PROXY
+# BIGO LIVE
+DOMAIN-SUFFIX,bigo.tv,PROXY
+DOMAIN-SUFFIX,bigolive.tv,PROXY
+DOMAIN-SUFFIX,bigo.sg,PROXY
+DOMAIN,static-web.hzmk.site,PROXY
+DOMAIN-SUFFIX,cubetecn.com,PROXY
