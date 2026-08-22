@@ -1,5 +1,5 @@
 #!name=AngelLive 韩国地区分流
-#!desc=AngelLive 韩国地区分流：SOOP 全部直连，PandaTV、CHZZK 走韩国策略；通用视频及静态图片 CDN 直连。安装时请把 PROXY 映射到韩国地区策略组。
+#!desc=AngelLive 韩国地区分流：PandaTV、CHZZK 走韩国策略，通用视频及静态图片 CDN 直连。SOOP 已拆分为独立直连插件。安装时请把 PROXY 映射到韩国地区策略组。
 #!author=dx
 #!homepage=https://plugins.carsonn.works
 #!date=2026-08-22
@@ -9,10 +9,6 @@ DOMAIN-SUFFIX,live-video.net,DIRECT
 DOMAIN,nng-phinf.pstatic.net,DIRECT
 DOMAIN,ssl.pstatic.net,DIRECT
 DOMAIN,livecloud-thumb.akamaized.net,DIRECT
-# SOOP（原 AfreecaTV）：接口、登录、弹幕及视频全部直连
-DOMAIN-SUFFIX,sooplive.com,DIRECT
-DOMAIN-SUFFIX,sooplive.co.kr,DIRECT
-DOMAIN-SUFFIX,afreecatv.com,DIRECT
 # PandaTV（韩国）
 DOMAIN-SUFFIX,pandalive.co.kr,PROXY
 DOMAIN,chat-ws.neolive.kr,PROXY
