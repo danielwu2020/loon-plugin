@@ -19,3 +19,7 @@ DOMAIN,comm-api.game.naver.com,PROXY
 DOMAIN,kr-ss1.chat.naver.com,PROXY
 DOMAIN,apis.naver.com,PROXY
 DOMAIN,livecloud.akamaized.net,PROXY
+# SOOP（原 AfreecaTV）：所有子域名完全直连
+DOMAIN-SUFFIX,sooplive.com,DIRECT
+DOMAIN-SUFFIX,sooplive.co.kr,DIRECT
+DOMAIN-SUFFIX,afreecatv.com,DIRECT
