@@ -1,6 +1,6 @@
 #!name=AngelLive 其他地区分流
 #!desc=AngelLive 的 Kick、BIGO LIVE 及插件目录分流规则；通用视频及静态图片 CDN 直连。安装时请把 PROXY 映射到其他地区策略组。
-#!author=OpenAI Codex
+#!author=dx
 #!homepage=https://plugins.carsonn.works
 #!date=2026-08-22
 [Rule]
