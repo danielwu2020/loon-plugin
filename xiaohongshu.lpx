@@ -1,0 +1,58 @@
+#!name=小红书 9.44.1 修复版
+#!desc=兼容小红书 9.44.1 的图片、视频去水印；更新后请清除缓存并重启 APP。
+#!author=奶思
+#!homepage=https://github.com/fmz200/wool_scripts
+#!icon=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/gif/naisi-01.gif
+#!raw-url=
+#!tg-channel=https://t.me/inaisi
+#!date=2026-08-27
+#############################################
+
+[Argument]
+xhs_enable = switch,true,false,tag=小红书-脚本开关
+
+[Rule]
+DOMAIN, ads-img-qc.xhscdn.com, REJECT
+DOMAIN, ads-video-al.xhscdn.com, REJECT
+DOMAIN, ads-video-qc.xhscdn.com, REJECT
+DOMAIN, t-ads.xiaohongshu.com, REJECT
+AND, ((PROTOCOL, QUIC), (DOMAIN-SUFFIX, xiaohongshu.com)), REJECT
+
+
+[Rewrite]
+# 惊喜弹窗
+^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/v1\/surprisebox\/(?:get_style|open|submit_action) reject-dict
+^https?:\/\/www\.xiaohongshu\.com\/api\/marketing\/box\/trigger\? reject-dict
+# 信息流
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/guide\? reject-dict
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/detailfeed\/preload\? reject-dict
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/guide\/user_banner reject-dict
+^https?:\/\/www\.xiaohongshu\.com\/api\/sns\/(v\d+\/ads\/resource|v\d+\/hey\/\w+\/hey_gallery) reject-dict
+# 评论区图片水印
+^https?:\/\/ci\.xiaohongshu\.com\/system_config\/watermark reject-img
+
+
+[Script]
+# 搜索页
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(banner|hot)_list script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(hint|trending)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+http-response ^https?:\/\/(so|edith)\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/notes\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+# 开屏广告
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/config\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/splash_config script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
+# 详情页,小部件
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/widgets script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书详情页, enable={xhs_enable}
+# 图片水印,视频水印
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/(imagefeed|feed|videofeed|detail|detailfeed)(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-媒体缓存, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/live_photo\/save(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书实况图片去水印, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/((video|image|media)\/(save|download)|(save|download))(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-保存, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/(followfeed|homefeed)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-信息流, enable={xhs_enable}
+# 评论区图片、live图水印，表情包下载
+http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/(v5\/note\/comment\/list|v3\/note\/comment\/sub_comments)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印存储, enable={xhs_enable}
+http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/v1\/interaction\/comment\/video\/download\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印下载, enable={xhs_enable}
+
+
+
+
+[MITM]
+hostname = edith.xiaohongshu.com, www.xiaohongshu.com, ci.xiaohongshu.com, rec.xiaohongshu.com, so.xiaohongshu.com
