@@ -3,7 +3,7 @@
 #!author=奶思
 #!homepage=https://github.com/fmz200/wool_scripts
 #!icon=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/gif/naisi-01.gif
-#!raw-url=
+#!raw-url=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/Xiaohongshu-9.44.1.lpx
 #!tg-channel=https://t.me/inaisi
 #!date=2026-08-27
 #############################################
@@ -34,22 +34,22 @@ AND, ((PROTOCOL, QUIC), (DOMAIN-SUFFIX, xiaohongshu.com)), REJECT
 
 [Script]
 # 搜索页
-http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(banner|hot)_list script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
-http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(hint|trending)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
-http-response ^https?:\/\/(so|edith)\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/notes\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(banner|hot)_list script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/(hint|trending)\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
+http-response ^https?:\/\/(so|edith)\.xiaohongshu\.com\/api\/sns\/v\d+\/search\/notes\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书搜索页, enable={xhs_enable}
 # 开屏广告
-http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/config\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
-http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/splash_config script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/config\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/system_service\/splash_config script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书开屏广告, enable={xhs_enable}
 # 详情页,小部件
-http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/widgets script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书详情页, enable={xhs_enable}
+http-response ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/widgets script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书详情页, enable={xhs_enable}
 # 图片水印,视频水印
-http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/(imagefeed|feed|videofeed|detail|detailfeed)(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-媒体缓存, enable={xhs_enable}
-http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/live_photo\/save(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书实况图片去水印, enable={xhs_enable}
-http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/((video|image|media)\/(save|download)|(save|download))(?:\?|$) script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-保存, enable={xhs_enable}
-http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/(followfeed|homefeed)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-信息流, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/(imagefeed|feed|videofeed|detail|detailfeed)(?:\?|$) script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-媒体缓存, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/live_photo\/save(?:\?|$) script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书实况图片去水印, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/((video|image|media)\/(save|download)|(save|download))(?:\?|$) script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-保存, enable={xhs_enable}
+http-response ^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d+\/(followfeed|homefeed)\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书图片视频去水印-信息流, enable={xhs_enable}
 # 评论区图片、live图水印，表情包下载
-http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/(v5\/note\/comment\/list|v3\/note\/comment\/sub_comments)\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印存储, enable={xhs_enable}
-http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/v1\/interaction\/comment\/video\/download\? script-path=xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印下载, enable={xhs_enable}
+http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/(v5\/note\/comment\/list|v3\/note\/comment\/sub_comments)\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印存储, enable={xhs_enable}
+http-response ^https:\/\/edith\.xiaohongshu\.com\/api\/sns\/v1\/interaction\/comment\/video\/download\? script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/xiaohongshu-9.44.1.js, requires-body=true, timeout=60, tag=小红书评论区去水印下载, enable={xhs_enable}
 
 
 
