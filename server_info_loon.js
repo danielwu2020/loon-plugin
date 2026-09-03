@@ -1,13 +1,13 @@
 /*************************************
  * 节点详情查询 Ultimate（精修完整合并版）
- * Version: 2.30
+ * Version: 2.31
  *
  * 数据源：
  * - ip-api
  * - cz88
  * - AbuseIPDB
  *
- * 2.30 精细升级版重点：
+ * 2.31 兼容优化版重点：
  * 1. 完整保留 2.03 原展示 / 画像 / 平台建议结构
  * 2. 新增 ASN 行为学习权重（动态）
  * 3. 新增国家差异权重（美 / 欧 / 亚 / 其他）
@@ -15,11 +15,14 @@
  * 5. 新增共享池模拟
  * 6. 减少同类信号重复惩罚，提升真实性
  * 7. 冲突证据降权，数据不足时更保守
+ * 8. 修复 AbuseIPDB 缺失时被当作 0 风险的问题
+ * 9. 结果缓存前置，基础数据并行请求
+ * 10. 新增 IP 使用人数估算与可解释原生性分析
  *************************************/
 
-const SCRIPT_VERSION = "2.30";
-const TIMEOUT = 15000;
-const CHECK_GUARD_TIMEOUT = 16000;
+const SCRIPT_VERSION = "2.31";
+const TIMEOUT = 8000;
+const CHECK_GUARD_TIMEOUT = 19000;
 const REQUEST_RETRY = 1;
 const ABUSE_CACHE_TTL = 12 * 60 * 60 * 1000;
 const RESULT_CACHE_TTL = 10 * 60 * 1000;
@@ -29,6 +32,7 @@ const LINE_LEARN_KEY_PREFIX = "NODE_CHECK_LINE_LEARN_";
 /*************** 参数读取 ***************/
 function getArgs() {
   const raw = (typeof $argument !== "undefined" && $argument) ? $argument : "";
+  if (raw && typeof raw === "object") return raw;
   const obj = {};
   raw.split("&").forEach(function (pair) {
     if (!pair) return;
@@ -36,7 +40,11 @@ function getArgs() {
     if (idx === -1) return;
     const k = pair.slice(0, idx);
     const v = pair.slice(idx + 1);
-    obj[k] = decodeURIComponent(v || "");
+    try {
+      obj[k] = decodeURIComponent(String(v || "").replace(/\+/g, "%20"));
+    } catch (e) {
+      obj[k] = v || "";
+    }
   });
   return obj;
 }
@@ -225,11 +233,11 @@ function shouldRetryHttp(error, response) {
   if (error) return true;
   const code = response && (response.status || response.statusCode || 0);
   if (!code) return true;
-  return code >= 500;
+  return code === 408 || code === 425 || code >= 500;
 }
 
 function httpGet(target, callback, retryLeft) {
-  const opts = typeof target === "string" ? { url: target } : (target || {});
+  const opts = typeof target === "string" ? { url: target } : Object.assign({}, target || {});
   if (!opts.timeout) opts.timeout = TIMEOUT;
   if (NODE_PARAM) opts.node = NODE_PARAM;
 
@@ -240,7 +248,7 @@ function httpGet(target, callback, retryLeft) {
     if (settled) return;
     settled = true;
     callback("timeout", null, null);
-  }, TIMEOUT + 2000);
+  }, Number(opts.timeout || TIMEOUT) + 1000);
 
   $httpClient.get(opts, function (error, response, data) {
     if (settled) return;
@@ -253,6 +261,10 @@ function httpGet(target, callback, retryLeft) {
     settled = true;
     callback(error, response, data);
   });
+}
+
+function httpGetOnce(target, callback) {
+  httpGet(target, callback, 0);
 }
 
 /*************** 并行检测 ***************/
@@ -329,27 +341,9 @@ function getAbuseCacheKey(ip) {
   return "NODE_CHECK_ABUSE_CACHE_" + ip;
 }
 
-function getResultCacheKeyByMeta(ipApi, cz88Data, abuseData) {
+function getResultCacheKey(ipApi) {
   const ip = ipApi && ipApi.query ? ipApi.query : "unknown";
-  const asn = ipApi && ipApi.as ? ipApi.as : "unknown_as";
-  const cc = ipApi && ipApi.countryCode ? ipApi.countryCode : "xx";
-  const proxy = ipApi && ipApi.proxy ? "1" : "0";
-  const hosting = ipApi && ipApi.hosting ? "1" : "0";
-  const netType = safeText(cz88Data && cz88Data.netWorkType, "-");
-  const abuseScore = abuseData && abuseData.data ? String(abuseData.data.abuseConfidenceScore || 0) : "na";
-  const reports = abuseData && abuseData.data ? String(abuseData.data.totalReports || 0) : "na";
-
-  const mini = [
-    NODE_NAME || "default",
-    ip,
-    asn,
-    cc,
-    proxy,
-    hosting,
-    netType,
-    abuseScore,
-    reports
-  ].join("|");
+  const mini = [NODE_NAME || "default", ip, ABUSEIPDB_KEY ? "abuse-on" : "abuse-off"].join("|");
 
   return "NODE_CHECK_RESULT_CACHE_" + SCRIPT_VERSION + "_" + simpleHash(mini);
 }
@@ -793,14 +787,20 @@ function checkAbuseIPDB(ip, cb) {
 
   const cacheKey = getAbuseCacheKey(ip);
   const cache = readCache(cacheKey);
-  if (cache && cache.time && (Date.now() - cache.time < ABUSE_CACHE_TTL)) {
+  if (
+    cache &&
+    cache.time &&
+    (Date.now() - cache.time < ABUSE_CACHE_TTL) &&
+    cache.data &&
+    cache.data.data
+  ) {
     return cb(cache.data, true);
   }
 
   const url =
     "https://api.abuseipdb.com/api/v2/check?ipAddress=" +
     encodeURIComponent(ip) +
-    "&maxAgeInDays=90&verbose=true";
+    "&maxAgeInDays=90";
 
   httpGet(
     {
@@ -812,10 +812,30 @@ function checkAbuseIPDB(ip, cb) {
       }
     },
     function (err, resp, data) {
-      if (err || !data) return cb(null, false);
-      const parsed = parseJSON(data) || null;
-      if (parsed) writeCache(cacheKey, parsed);
-      cb(parsed, false);
+      const code = resp && (resp.status || resp.statusCode || 0);
+      if (err || !data || code < 200 || code >= 300) return cb(null, false);
+
+      const parsed = parseJSON(data);
+      if (!parsed || !parsed.data) return cb(null, false);
+
+      // 只缓存分析实际使用的字段，避免把报告明细或错误响应写入持久化存储。
+      const source = parsed.data;
+      const normalized = {
+        data: {
+          abuseConfidenceScore: Number(source.abuseConfidenceScore || 0),
+          totalReports: Number(source.totalReports || 0),
+          numDistinctUsers: Number(source.numDistinctUsers || 0),
+          isTor: source.isTor === true,
+          isWhitelisted: source.isWhitelisted,
+          usageType: String(source.usageType || "").trim(),
+          countryCode: String(source.countryCode || "").trim(),
+          domain: String(source.domain || "").trim(),
+          lastReportedAt: String(source.lastReportedAt || "").trim()
+        }
+      };
+
+      writeCache(cacheKey, normalized);
+      cb(normalized, false);
     }
   );
 }
@@ -848,7 +868,7 @@ function checkNetflix(cb) {
   }
 
   tests.forEach(function (item) {
-    httpGet(
+    httpGetOnce(
       {
         url: "https://www.netflix.com/title/" + item.id,
         headers: {
@@ -877,7 +897,7 @@ function checkNetflix(cb) {
 }
 
 function checkDisney(cb) {
-  httpGet(
+  httpGetOnce(
     {
       url: "https://www.disneyplus.com/",
       headers: {
@@ -901,7 +921,7 @@ function checkDisney(cb) {
 }
 
 function checkTikTok(cb) {
-  httpGet(
+  httpGetOnce(
     {
       url: "https://www.tiktok.com/",
       headers: {
@@ -921,7 +941,7 @@ function checkTikTok(cb) {
 }
 
 function checkYouTube(cb) {
-  httpGet(
+  httpGetOnce(
     {
       url: "https://www.youtube.com/premium",
       headers: {
@@ -946,7 +966,8 @@ function checkYouTube(cb) {
 }
 
 function checkChatGPTWithRisk(risk, cb) {
-  httpGet(
+  let traceHint = "";
+  httpGetOnce(
     {
       url: "https://chatgpt.com/cdn-cgi/trace",
       headers: {
@@ -986,11 +1007,12 @@ function checkChatGPTWithRisk(risk, cb) {
             return cb("地区支持（CF视角：" + loc + " / " + traceIp + "）", "ok");
           }
 
-          return cb("地区不在支持列表（CF视角：" + (loc || "未知") + " / " + traceIp + "）", "fail");
+          // 内置地区表可能落后于服务端策略，继续用实际网页结果复核。
+          traceHint = "CF视角：" + (loc || "未知") + " / " + traceIp + "，未在内置地区表";
         }
       }
 
-      httpGet(
+      httpGetOnce(
         {
           url: "https://chatgpt.com/",
           headers: {
@@ -999,7 +1021,9 @@ function checkChatGPTWithRisk(risk, cb) {
           }
         },
         function (err2, resp2, data2) {
-          if (err2 || !resp2) return cb("检测失败", "fail");
+          if (err2 || !resp2) {
+            return cb(traceHint ? (traceHint + "；网页复核失败") : "检测失败", traceHint ? "warn" : "fail");
+          }
 
           const code2 = resp2.status || resp2.statusCode || 0;
           const body2 = String(data2 || "");
@@ -1009,7 +1033,10 @@ function checkChatGPTWithRisk(risk, cb) {
           }
 
           if (code2 === 200 || code2 === 301 || code2 === 302) {
-            return cb("网页可访问（未识别地区，仅网页层结论）", "warn");
+            return cb(
+              traceHint ? (traceHint + "；网页可访问（以实际可达性为准）") : "网页可访问（未识别地区，仅网页层结论）",
+              "warn"
+            );
           }
 
           if (code2 === 403) {
@@ -1071,7 +1098,7 @@ function isRealISPLineCandidate(ipApi, cz88, risk, abuseScore) {
   if (!risk.cloudNativeDatacenter) hitScore += 15;
   if (!risk.isASNDatacenter) hitScore += 15;
   if (isIspLikeText(mix)) hitScore += 20;
-  if (abuseScore <= 10) hitScore += 10;
+  if (abuseScore !== null && abuseScore <= 10) hitScore += 10;
 
   if (risk.transitUpstreamHit) hitScore -= 8;
   if (risk.hostingLikeOrg) hitScore -= 10;
@@ -1117,7 +1144,7 @@ function calcSharedISPScore(risk, ipApi, cz88) {
   }
 
   if (risk.majorISP) score -= 8;
-  if (risk.abuseScore === 0) score -= 4;
+  if (risk.abuseKnown && risk.abuseScore === 0) score -= 4;
   if (!risk.proxyExit && !risk.cloudNativeDatacenter && !risk.isASNDatacenter) score -= 6;
 
   return clamp(score, 0, 100);
@@ -1207,8 +1234,8 @@ function getASNMeta(ipApi, risk) {
 
   abuseHistory = clamp(abuseHistory, 0, 100);
 
-  let level = "clean";
-  let tier = "优质专线/干净企业线";
+  let level = reasons.length ? "clean" : "neutral";
+  let tier = reasons.length ? "优质专线/干净企业线" : "证据不足/未分类";
 
   if (abuseHistory > 70) {
     level = "bad";
@@ -1248,7 +1275,7 @@ function getASNDensity(risk) {
 
   if (risk.majorISP) density -= 10;
   if (risk.nativeFeel >= 70) density -= 8;
-  if (risk.abuseScore === 0) density -= 4;
+  if (risk.abuseKnown && risk.abuseScore === 0) density -= 4;
   if (!risk.proxyExit && !risk.cloudNativeDatacenter && !risk.isASNDatacenter) density -= 4;
 
   density = clamp(Math.round(density), 0, 100);
@@ -1310,6 +1337,14 @@ function classifyLineQuality(risk, asnMeta, asnDensity, ipApi) {
     /\benterprise\b/i.test(all) ||
     /\bbusiness\b/i.test(all);
 
+  if (risk.dataCompletenessScore < 50 || risk.conflictScore >= 60) {
+    return {
+      label: "⚪️ 证据不足 / 暂无法可靠分类",
+      level: "unknown",
+      desc: "基础来源缺失或证据冲突较大，本次不强行归类为家宽或高风险机房"
+    };
+  }
+
   if (
     !risk.blacklisted &&
     !risk.attackInvolved &&
@@ -1357,6 +1392,7 @@ function classifyLineQuality(risk, asnMeta, asnDensity, ipApi) {
     !risk.cloudNativeDatacenter &&
     !risk.isASNDatacenter &&
     !risk.proxyExit &&
+    risk.abuseKnown &&
     risk.abuseScore < 10 &&
     asnDensity.density <= 28 &&
     (
@@ -1482,12 +1518,102 @@ function formatProxyTier(risk) {
   return { text: "正常", level: "ok" };
 }
 
-function formatShareCount(score) {
-  const n = clamp(Math.round(Number(score) || 0), 0, 100);
-  if (n <= 10) return { text: "1–10（低）", level: "ok" };
-  if (n <= 30) return { text: "10–30（较低）", level: "ok" };
-  if (n <= 60) return { text: "30–80（一般）", level: "warn" };
-  return { text: "80+（偏高）", level: "fail" };
+function estimateIpUsage(risk) {
+  const n = clamp(Math.round(Number(risk && risk.shareCountScore) || 0), 0, 100);
+  let range = "约 1–5";
+  let label = "疑似独享或小规模共享";
+  let level = "ok";
+
+  if (n > 75) {
+    range = "约 100+";
+    label = "高共享";
+    level = "fail";
+  } else if (n > 50) {
+    range = "约 20–100";
+    label = "中高共享";
+    level = "fail";
+  } else if (n > 25) {
+    range = "约 5–20";
+    label = "中等共享";
+    level = "warn";
+  }
+
+  const completeness = clamp(Number(risk && risk.dataCompletenessScore || 0), 0, 100);
+  const conflict = clamp(Number(risk && risk.conflictScore || 0), 0, 100);
+  let confidence = 30 + completeness * 0.35 - conflict * 0.20;
+  if (risk && (risk.proxyExit || risk.cloudNativeDatacenter || risk.isASNDatacenter)) confidence += 10;
+  confidence = clamp(Math.round(confidence), 20, 75);
+
+  const reasons = [];
+  if (risk && risk.proxyExit) uniquePush(reasons, "代理出口标记");
+  if (risk && (risk.cloudNativeDatacenter || risk.isASNDatacenter)) uniquePush(reasons, "云/机房ASN特征");
+  if (risk && risk.sharedPool && risk.sharedPool.score >= 35) uniquePush(reasons, "共享池倾向");
+  if (risk && risk.asnDensity && risk.asnDensity.density >= 35) uniquePush(reasons, "ASN共享密度");
+  if (risk && risk.abuseKnown && risk.totalReports > 0) uniquePush(reasons, "历史滥用报告");
+  if (risk && risk.majorISP && !risk.proxyExit) uniquePush(reasons, "主流ISP反证");
+
+  return {
+    range: range,
+    label: label,
+    score: n,
+    confidence: confidence,
+    level: level,
+    reasons: reasons.length ? reasons.join(" / ") : "仅有有限启发式信号"
+  };
+}
+
+function analyzeNativeLine(risk, ipApi, cz88, abuse) {
+  const nativeScore = clamp(Math.round(Number(risk && risk.nativeFeel) || 0), 0, 100);
+  let conclusion = "原生性不明确";
+  let level = "warn";
+
+  if (risk && risk.proxyExit) {
+    conclusion = "代理出口，不能按原生线路认定";
+    level = "fail";
+  } else if (risk && (risk.cloudNativeDatacenter || risk.isASNDatacenter || risk.networkCategory === "数据中心/服务器")) {
+    conclusion = "机房/托管出口，非住宅原生";
+    level = "fail";
+  } else if (risk && (risk.networkCategory === "运营商移动网络" || risk.networkCategory === "移动数据")) {
+    conclusion = "疑似运营商移动原生出口，可能存在 CGNAT 共享";
+    level = "warn";
+  } else if (
+    risk &&
+    (risk.networkCategory === "住宅宽带" || risk.networkCategory === "运营商ISP网络") &&
+    nativeScore >= 60
+  ) {
+    conclusion = "疑似原生住宅/运营商出口";
+    level = nativeScore >= 80 ? "ok" : "warn";
+  } else if (risk && risk.networkCategory === "商宽/企业宽带") {
+    conclusion = "商宽/企业出口，原生性需谨慎判断";
+  }
+
+  const ipCountry = String(ipApi && ipApi.countryCode || "").trim().toUpperCase();
+  const abuseCountry = String(abuse && abuse.data && abuse.data.countryCode || "").trim().toUpperCase();
+  let geoConsistency = "数据不足";
+  if (ipCountry && abuseCountry) geoConsistency = ipCountry === abuseCountry ? "一致" : "不一致";
+
+  const completeness = clamp(Number(risk && risk.dataCompletenessScore || 0), 0, 100);
+  const conflict = clamp(Number(risk && risk.conflictScore || 0), 0, 100);
+  const confidence = clamp(Math.round(completeness * 0.65 + (100 - conflict) * 0.25), 20, 90);
+
+  const reasons = [];
+  if (risk && risk.majorISP) uniquePush(reasons, "主流运营商ASN/组织");
+  if (risk && risk.isResidentialBase) uniquePush(reasons, "住宅网络类型");
+  if (risk && risk.isMobile) uniquePush(reasons, "移动网络类型");
+  if (risk && risk.proxyExit) uniquePush(reasons, "代理标记");
+  if (risk && (risk.cloudNativeDatacenter || risk.isASNDatacenter)) uniquePush(reasons, "云/机房特征");
+  if (cz88 && cz88.netWorkType) uniquePush(reasons, "cz88 网络类型");
+  if (geoConsistency === "一致") uniquePush(reasons, "多源地区一致");
+  if (geoConsistency === "不一致") uniquePush(reasons, "多源地区冲突");
+
+  return {
+    conclusion: conclusion,
+    score: nativeScore,
+    confidence: confidence,
+    geoConsistency: geoConsistency,
+    reasons: reasons.length ? reasons.join(" / ") : "数据不足",
+    level: level
+  };
 }
 
 function formatRiskBand(n) {
@@ -1495,6 +1621,13 @@ function formatRiskBand(n) {
   if (v <= 20) return { text: v + "（低）", level: "ok" };
   if (v <= 50) return { text: v + "（中）", level: "warn" };
   return { text: v + "（高）", level: "fail" };
+}
+
+function formatConfidenceBand(n) {
+  const v = clamp(Math.round(Number(n) || 0), 0, 100);
+  if (v >= 75) return { text: v + "（高）", level: "ok" };
+  if (v >= 50) return { text: v + "（中）", level: "warn" };
+  return { text: v + "（低）", level: "neutral" };
 }
 
 function formatAirportSuspicion(v) {
@@ -1582,10 +1715,13 @@ function simulateMultiSourceScores(risk, ipApi) {
     ippure = { text: "中风险（" + Math.max(2, Math.round((risk.mobileBehaviorRisk + riskValue) / 30)) + "）", level: "warn" };
   }
 
-  let scamalytics = { text: "低风险（0）", level: "ok" };
-  const scamScore = Math.min(100, Math.round(risk.abuseScore * 0.6 + riskValue * 0.25 + shared * 0.1));
-  if (scamScore > 15) scamalytics = { text: "中风险（" + scamScore + "）", level: "warn" };
-  if (scamScore > 40) scamalytics = { text: "高风险（" + scamScore + "）", level: "fail" };
+  let scamalytics = { text: "未知（信誉数据缺失）", level: "neutral" };
+  if (risk.abuseKnown) {
+    const scamScore = Math.min(100, Math.round(risk.abuseScore * 0.6 + riskValue * 0.25 + shared * 0.1));
+    scamalytics = { text: "低风险（" + scamScore + "）", level: "ok" };
+    if (scamScore > 15) scamalytics = { text: "中风险（" + scamScore + "）", level: "warn" };
+    if (scamScore > 40) scamalytics = { text: "高风险（" + scamScore + "）", level: "fail" };
+  }
 
   let ip2location = { text: "低风险（3）", level: "ok" };
   if (risk.networkCategory === "数据中心/服务器") {
@@ -1642,7 +1778,8 @@ function readLineLearningModel(key) {
         volatility: 0,
         categoryStats: {},
         lastCategories: [],
-        lastScores: []
+        lastScores: [],
+        sampleIds: []
       };
     }
     const obj = parseJSON(raw);
@@ -1653,7 +1790,8 @@ function readLineLearningModel(key) {
         volatility: 0,
         categoryStats: {},
         lastCategories: [],
-        lastScores: []
+        lastScores: [],
+        sampleIds: []
       };
     }
     obj.count = Number(obj.count || 0);
@@ -1662,6 +1800,7 @@ function readLineLearningModel(key) {
     obj.categoryStats = obj.categoryStats || {};
     obj.lastCategories = Array.isArray(obj.lastCategories) ? obj.lastCategories : [];
     obj.lastScores = Array.isArray(obj.lastScores) ? obj.lastScores : [];
+    obj.sampleIds = Array.isArray(obj.sampleIds) ? obj.sampleIds : [];
     return obj;
   } catch (e) {
     return {
@@ -1670,22 +1809,30 @@ function readLineLearningModel(key) {
       volatility: 0,
       categoryStats: {},
       lastCategories: [],
-      lastScores: []
+      lastScores: [],
+      sampleIds: []
     };
   }
 }
 
-function writeLineLearningModel(key, category, score) {
+function writeLineLearningModel(key, category, score, sampleId) {
   try {
     const model = readLineLearningModel(key);
     const categories = Array.isArray(model.lastCategories) ? model.lastCategories.slice(0) : [];
     const scores = Array.isArray(model.lastScores) ? model.lastScores.slice(0) : [];
+    const sampleIds = Array.isArray(model.sampleIds) ? model.sampleIds.slice(0) : [];
+    const sampleToken = sampleId ? simpleHash(String(sampleId)) : "";
+
+    // 同一出口 IP 的重复手动查询不重复计为新的“学习样本”。
+    if (sampleToken && sampleIds.indexOf(sampleToken) !== -1) return;
 
     categories.push(String(category || "未知"));
     scores.push(clamp(Math.round(Number(score) || 0), 0, 100));
+    sampleIds.push(sampleToken || simpleHash(category + "|" + score + "|" + Date.now()));
 
     while (categories.length > LINE_LEARN_MAX_SAMPLES) categories.shift();
     while (scores.length > LINE_LEARN_MAX_SAMPLES) scores.shift();
+    while (sampleIds.length > LINE_LEARN_MAX_SAMPLES) sampleIds.shift();
 
     const stats = {};
     for (let i = 0; i < categories.length; i++) {
@@ -1698,7 +1845,8 @@ function writeLineLearningModel(key, category, score) {
       volatility: Math.round(stddev(scores)),
       categoryStats: stats,
       lastCategories: categories,
-      lastScores: scores
+      lastScores: scores,
+      sampleIds: sampleIds
     };
 
     $persistentStore.write(JSON.stringify(payload), key);
@@ -1835,8 +1983,7 @@ function calcConfidenceScore(dataCompletenessScore, conflictScore, learningMeta)
   score += Math.round((clamp(dataCompletenessScore, 0, 100) - 70) * 0.35);
   score -= Math.round(clamp(conflictScore, 0, 100) * 0.25);
 
-  if (learningMeta && learningMeta.count >= 4) score += 6;
-  if (learningMeta && learningMeta.stable) score += 6;
+  // 历史分数来自同一套启发式模型，只能用于平滑，不能作为“更准确”的证据。
   if (learningMeta && learningMeta.volatility >= 18) score -= 6;
 
   return clamp(score, 30, 98);
@@ -1858,9 +2005,15 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const cloudProvider = detectCloudProvider(ipApi, cz88);
   const regionWeight = getRegionWeight(ipApi && ipApi.countryCode);
 
-  let abuseScore = 0;
-  let totalReports = 0;
-  if (abuse && abuse.data) {
+  const abuseKnown = !!(
+    abuse &&
+    abuse.data &&
+    abuse.data.abuseConfidenceScore !== undefined &&
+    abuse.data.abuseConfidenceScore !== null
+  );
+  let abuseScore = null;
+  let totalReports = null;
+  if (abuseKnown) {
     abuseScore = Number(abuse.data.abuseConfidenceScore || 0);
     totalReports = Number(abuse.data.totalReports || 0);
   }
@@ -1963,6 +2116,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   const enterpriseCleanShield =
     !ipApi.proxy &&
     !ipApi.hosting &&
+    abuseKnown &&
     abuseScore < 10 &&
     humanScore !== null &&
     humanScore >= 60 &&
@@ -2003,7 +2157,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let dataCompletenessScore = 100;
   if (!rawNetwork) dataCompletenessScore -= 30;
   if (humanMeta.missing) dataCompletenessScore -= 30;
-  if (ABUSEIPDB_KEY && !abuse) dataCompletenessScore -= 25;
+  if (!abuseKnown) dataCompletenessScore -= ABUSEIPDB_KEY ? 25 : 15;
   dataCompletenessScore = clamp(dataCompletenessScore, 0, 100);
 
   const evidenceConflictScore = getEvidenceConflictScore({
@@ -2098,18 +2252,18 @@ function analyzeRisk(ipApi, cz88, abuse) {
     datacenterEvidence += 4;
   }
 
-  if (abuseScore >= 50) {
+  if (abuseKnown && abuseScore >= 50) {
     datacenterEvidence += 12;
     businessEvidence += 3;
     uniquePush(tags, "高滥用分");
-  } else if (abuseScore >= 25) {
+  } else if (abuseKnown && abuseScore >= 25) {
     datacenterEvidence += 8;
     businessEvidence += 2;
     uniquePush(tags, "中滥用分");
-  } else if (abuseScore >= 10) {
+  } else if (abuseKnown && abuseScore >= 10) {
     datacenterEvidence += 4;
     uniquePush(tags, "轻滥用分");
-  } else if (abuseScore === 0) {
+  } else if (abuseKnown && abuseScore === 0) {
     residentialEvidence += 3;
   }
 
@@ -2120,7 +2274,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     uniquePush(tags, "企业线清洁盾");
   }
 
-  if (majorISP && !ipApi.proxy && !ipApi.hosting && abuseScore === 0 && !cloudNativeDatacenter) {
+  if (majorISP && !ipApi.proxy && !ipApi.hosting && abuseKnown && abuseScore === 0 && !cloudNativeDatacenter) {
     residentialEvidence += 10;
     businessEvidence -= 4;
     datacenterEvidence -= 10;
@@ -2168,11 +2322,9 @@ function analyzeRisk(ipApi, cz88, abuse) {
 
   let surfaceScore = 48;
   let infraScore = 18;
-  let reputationScore = clamp(
-    Math.round(abuseScore * 0.9 + Math.min(totalReports, 15) * 2.2),
-    0,
-    100
-  );
+  let reputationScore = abuseKnown
+    ? clamp(Math.round(abuseScore * 0.9 + Math.min(totalReports, 15) * 2.2), 0, 100)
+    : 20;
   let behaviorScore = 26;
 
   if (networkCategory === "住宅宽带" || networkCategory === "运营商ISP网络") {
@@ -2233,7 +2385,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     behaviorScore += 6;
   }
 
-  if (majorISP && !ipApi.proxy && !ipApi.hosting && abuseScore === 0 && !cloudNativeDatacenter) {
+  if (majorISP && !ipApi.proxy && !ipApi.hosting && abuseKnown && abuseScore === 0 && !cloudNativeDatacenter) {
     surfaceScore += 8;
     infraScore -= 8;
     behaviorScore -= 6;
@@ -2402,7 +2554,15 @@ function analyzeRisk(ipApi, cz88, abuse) {
   let cloudService = false;
   let anonymousVpnStyle = false;
   let publicProxyStyle = false;
-  let torStyle = false;
+  let torStyle = !!(abuseKnown && abuse.data && abuse.data.isTor === true);
+
+  if (torStyle) {
+    proxyExit = true;
+    suspiciousProxy = true;
+    highRiskProxy = true;
+    anonymousVpnStyle = true;
+    uniquePush(tags, "Tor出口");
+  }
 
   if (ipApi.proxy === true) {
     proxyExit = true;
@@ -2426,22 +2586,22 @@ function analyzeRisk(ipApi, cz88, abuse) {
     uniquePush(tags, cloudTier === "heavy" ? "重云厂商品牌命中" : "轻云厂商品牌命中");
   }
 
-  if (abuseScore >= 10 || totalReports >= 3) {
+  if (abuseKnown && (abuseScore >= 10 || totalReports >= 3)) {
     abuseNode = true;
     uniquePush(tags, "滥用记录");
   }
 
-  if (abuseScore >= 25 || totalReports >= 5) {
+  if (abuseKnown && (abuseScore >= 25 || totalReports >= 5)) {
     blacklisted = true;
-    uniquePush(tags, "黑名单嫌疑");
+    uniquePush(tags, "高滥用记录嫌疑");
   }
 
-  if (abuseScore >= 50 || totalReports >= 10) {
+  if (abuseKnown && (abuseScore >= 50 || totalReports >= 10)) {
     attackInvolved = true;
-    uniquePush(tags, "攻击风险");
+    uniquePush(tags, "高强度滥用记录");
   }
 
-  if (ipApi.proxy === true || blacklisted || attackInvolved || abuseScore >= 50) {
+  if (ipApi.proxy === true || blacklisted || attackInvolved || (abuseKnown && abuseScore >= 50)) {
     highRiskProxy = true;
   } else if (
     ipApi.hosting === true ||
@@ -2455,7 +2615,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     suspiciousProxy = true;
   }
 
-  if (abuseScore >= 10 || blacklisted || abuseNode || attackInvolved || ipApi.proxy === true) {
+  if ((abuseKnown && abuseScore >= 10) || blacklisted || abuseNode || attackInvolved || ipApi.proxy === true) {
     blacklistSuspicious = true;
   }
 
@@ -2532,6 +2692,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
         networkCategory === "ISP底子 / 共享嫌疑" &&
         sharedFeel <= 28 &&
         nativeFeel >= 60 &&
+        abuseKnown &&
         abuseScore < 10
       )
     );
@@ -2649,7 +2810,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     100
   );
 
-  if (majorISP && !proxyExit && !cloudNativeDatacenter && abuseScore === 0) {
+  if (majorISP && !proxyExit && !cloudNativeDatacenter && abuseKnown && abuseScore === 0) {
     appleRisk = clamp(appleRisk - 5, 0, 100);
     googleRisk = clamp(googleRisk - 4, 0, 100);
     tiktokRisk = clamp(tiktokRisk - 4, 0, 100);
@@ -2813,6 +2974,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     platformRisk: platformRisk,
     nativeFeel: nativeFeel,
     humanMeta: humanMeta,
+    abuseKnown: abuseKnown,
     abuseScore: abuseScore,
     proxyExit: proxyExit,
     cloudNativeDatacenter: cloudNativeDatacenter,
@@ -2828,6 +2990,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     vpnProbability: vpnProbability,
     networkCategory: networkCategory,
     majorISP: majorISP,
+    abuseKnown: abuseKnown,
     abuseScore: abuseScore,
     nativeFeel: nativeFeel,
     proxyExit: proxyExit,
@@ -2852,17 +3015,20 @@ function analyzeRisk(ipApi, cz88, abuse) {
     cloudNativeDatacenter: cloudNativeDatacenter,
     isASNDatacenter: isASNDatacenter,
     proxyExit: proxyExit,
+    abuseKnown: abuseKnown,
     abuseScore: abuseScore,
     nativeFeel: nativeFeel,
     sharedFeel: sharedFeel,
-    networkCategory: networkCategory
+    networkCategory: networkCategory,
+    dataCompletenessScore: dataCompletenessScore,
+    conflictScore: evidenceConflictScore
   }, asnMeta, asnDensity, ipApi);
 
   const confidenceScore = calcConfidenceScore(dataCompletenessScore, evidenceConflictScore, learningMeta);
 
-  let hardRiskConclusion = "无明确黑名单/滥用风险";
+  let hardRiskConclusion = "无明确高滥用记录风险";
   if (attackInvolved || (blacklisted && abuseScore >= 50)) {
-    hardRiskConclusion = "存在明确滥用或黑名单风险";
+    hardRiskConclusion = "存在高强度滥用记录风险";
   } else if (ipApi.proxy === true) {
     hardRiskConclusion = "存在明确代理风险";
   } else if (ipApi.hosting === true) {
@@ -2891,6 +3057,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     } else if (
       majorISP &&
       sharedFeel <= 35 &&
+      abuseKnown &&
       abuseScore < 10 &&
       nativeFeel >= 58
     ) {
@@ -2960,6 +3127,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     businessProbability,
     datacenterProbability,
     llmSummary,
+    abuseKnown,
     abuseScore,
     totalReports,
     associationRisk,
@@ -2983,7 +3151,7 @@ function analyzeRisk(ipApi, cz88, abuse) {
     cloudNativeDatacenter,
     fakeResidentialRisk,
     platformControlPressure,
-    dataCompleteness: dataCompletenessScore >= 80 ? "高" : dataCompletenessScore >= 50 ? "中" : "低",
+    dataCompleteness: dataCompletenessScore >= 90 ? "高" : dataCompletenessScore >= 50 ? "中" : "低",
     dataCompletenessScore,
     platformAssociationLevel,
     majorISP,
@@ -3063,22 +3231,52 @@ function fetchAll() {
       if (err1 || !data1) return done("IP查询失败\n" + String(err1 || ""));
 
       const ipApi = parseJSON(data1);
-      if (!ipApi || !ipApi.query) return done("IP数据解析失败");
+      if (!ipApi || ipApi.status === "fail" || !ipApi.query) {
+        return done("IP数据解析失败" + (ipApi && ipApi.message ? "\n" + ipApi.message : ""));
+      }
+
+      // 获取出口 IP 后立即命中最终结果缓存，避免重复请求所有外部来源。
+      const resultCacheKey = getResultCacheKey(ipApi);
+      const resultCache = readCache(resultCacheKey);
+      if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
+        return done(resultCache.data);
+      }
 
       const cz88Url = "https://www.cz88.net/api/cz88/ip/base?ip=" + ipApi.query;
-      httpGet(cz88Url, function (err2, res2, data2) {
-        let cz88Data = null;
-        if (!err2 && data2) {
-          const cz88Json = parseJSON(data2);
-          if (cz88Json && cz88Json.data) cz88Data = cz88Json.data;
-        }
-
-        checkAbuseIPDB(ipApi.query, function (abuseData, abuseFromCache) {
-          const resultCacheKey = getResultCacheKeyByMeta(ipApi, cz88Data, abuseData);
-          const resultCache = readCache(resultCacheKey);
-          if (resultCache && resultCache.time && (Date.now() - resultCache.time < RESULT_CACHE_TTL)) {
-            return done(resultCache.data);
+      const metadataChecks = [
+        {
+          name: "cz88",
+          run: function (cb) {
+            httpGet(cz88Url, function (err2, res2, data2) {
+              let value = null;
+              const code2 = res2 && (res2.status || res2.statusCode || 0);
+              if (!err2 && data2 && code2 >= 200 && code2 < 300) {
+                const cz88Json = parseJSON(data2);
+                if (cz88Json && cz88Json.data) value = cz88Json.data;
+              }
+              cb(value, "neutral");
+            });
           }
+        },
+        {
+          name: "AbuseIPDB",
+          run: function (cb) {
+            checkAbuseIPDB(ipApi.query, function (data, fromCache) {
+              cb({ data: data, fromCache: fromCache }, "neutral");
+            });
+          }
+        }
+      ];
+
+      runChecksParallel(metadataChecks, function (metadataResults) {
+          const cz88Data = metadataResults[0] && typeof metadataResults[0].value === "object"
+            ? metadataResults[0].value
+            : null;
+          const abuseMeta = metadataResults[1] && metadataResults[1].value && typeof metadataResults[1].value === "object"
+            ? metadataResults[1].value
+            : { data: null, fromCache: false };
+          const abuseData = abuseMeta.data || null;
+          const abuseFromCache = abuseMeta.fromCache === true;
 
           const risk = analyzeRisk(ipApi, cz88Data || {}, abuseData);
           const behavior = calcBehaviorModel(risk);
@@ -3087,11 +3285,11 @@ function fetchAll() {
           const ipapiScore = formatIpApiRisk(ipApi);
           const cz88Score = formatCz88Risk(cz88Data);
           const riskValueText = formatRiskPercent(risk.riskValue);
-          const nativeFeelText = formatNativeFeel(risk.nativeFeel);
           const sharedFeelText = formatSharedFeel(risk.sharedFeel);
           const proxyTierText = formatProxyTier(risk);
           const historyBehaviorText = formatHistoryBehavior(risk.historyBehavior);
-          const shareCountText = formatShareCount(risk.shareCountScore);
+          const ipUsageEstimate = estimateIpUsage(risk);
+          const nativeAnalysis = analyzeNativeLine(risk, ipApi, cz88Data, abuseData);
           const asnType = inferAsnType(ipApi, risk);
           const ipTypeLabel = inferIpTypeLabel(risk, ipApi, cz88Data);
           const simulated = simulateMultiSourceScores(risk, ipApi);
@@ -3104,7 +3302,7 @@ function fetchAll() {
           const platformPressureText = formatRiskBand(risk.platformControlPressure);
           const sharedISPText = formatRiskBand(risk.sharedISPScore);
           const segmentPollutionText = formatRiskBand(risk.segmentPollution.score);
-          const confidenceScoreText = formatRiskBand(100 - risk.conflictScore);
+          const confidenceScoreText = formatConfidenceBand(risk.confidenceScore);
           const conflictScoreText = formatRiskBand(risk.conflictScore);
           const socialRiskText = formatRiskPercent(risk.socialRisk);
 
@@ -3175,7 +3373,7 @@ function fetchAll() {
             lines.push("Transit上游命中：" + (risk.transitUpstreamHit ? "是" : "否"));
             lines.push("Hosting组织特征：" + (risk.hostingLikeOrg ? "是" : "否"));
             lines.push("原始网络标记：" + safeText(cz88Data && cz88Data.netWorkType, "未返回"));
-            lines.push("真人概率：" + (risk.humanMeta ? risk.humanMeta.text : "未知（数据不足）"));
+            lines.push("真人倾向（cz88）：" + (risk.humanMeta ? risk.humanMeta.text : "未知（数据不足）"));
             lines.push("代理标记：" + (ipApi.proxy ? "是" : "否"));
             lines.push("托管标记：" + (ipApi.hosting ? "是" : "否"));
             lines.push("");
@@ -3197,12 +3395,27 @@ function fetchAll() {
             lines.push("综合判断：" + risk.llmSummary);
             lines.push("");
 
+            lines.push("【原生性分析】");
+            lines.push(line("原生结论", nativeAnalysis.conclusion, nativeAnalysis.level));
+            lines.push("原生倾向指数：" + nativeAnalysis.score + " / 100");
+            lines.push("分析置信度：" + nativeAnalysis.confidence + "%");
+            lines.push("多源地区一致性：" + nativeAnalysis.geoConsistency);
+            lines.push("判断依据：" + nativeAnalysis.reasons);
+            lines.push("说明：原生性为多源特征推断，不等同运营商或代理商的官方证明");
+            lines.push("");
+
             lines.push("【风控画像】");
             lines.push(line("风控值", riskValueText.text, riskValueText.level));
-            lines.push(line("原生感", nativeFeelText.text, nativeFeelText.level));
             lines.push(line("共享感", sharedFeelText.text, sharedFeelText.level));
-            lines.push(line("共享人数", shareCountText.text, shareCountText.level));
             lines.push(line("历史行为评分", historyBehaviorText.text, historyBehaviorText.level));
+            lines.push("");
+
+            lines.push("【IP共享使用估算】");
+            lines.push(line("使用人数估算", ipUsageEstimate.range + "（" + ipUsageEstimate.label + "）", ipUsageEstimate.level));
+            lines.push("共享程度指数：" + ipUsageEstimate.score + " / 100");
+            lines.push("估算置信度：" + ipUsageEstimate.confidence + "%");
+            lines.push("估算依据：" + ipUsageEstimate.reasons);
+            lines.push("说明：无法从公网接口取得真实在线人数，此区间仅为线路共享规模推测");
             lines.push("");
 
             lines.push("【行为 / 关联画像】");
@@ -3224,8 +3437,8 @@ function fetchAll() {
             lines.push("ASN分层：" + safeText(risk.asnMeta.tier, "-"));
             lines.push("ASN画像说明：" + safeText(risk.asnMeta.reason, "无明显异常"));
             lines.push("ASN共享密度：" + risk.asnDensity.density + "（" + safeText(risk.asnDensity.label, "-") + "）");
-            lines.push(line("IP段污染率", segmentPollutionText.text, segmentPollutionText.level));
-            lines.push("IP段污染等级：" + risk.segmentPollution.level);
+            lines.push(line("IP段污染倾向（推断）", segmentPollutionText.text, segmentPollutionText.level));
+            lines.push("IP段污染倾向等级：" + risk.segmentPollution.level);
             lines.push("");
 
             lines.push("【共享型 ISP 识别】");
@@ -3289,9 +3502,10 @@ function fetchAll() {
             lines.push(boolLine("匿名VPN风格", risk.anonymousVpnStyle));
             lines.push(boolLine("机房代理风格", risk.cloudService || risk.isDatacenter || risk.isASNDatacenter));
             lines.push(boolLine("公共代理风格", risk.publicProxyStyle));
-            lines.push(boolLine("黑名单", risk.blacklisted));
+            lines.push(boolLine("高滥用记录嫌疑", risk.blacklisted));
             lines.push(boolLine("滥用节点", risk.abuseNode));
-            lines.push(boolLine("参与攻击", risk.attackInvolved));
+            lines.push(boolLine("高强度滥用记录", risk.attackInvolved));
+            lines.push(boolLine("Tor 出口", risk.torStyle));
             lines.push(boolLine("云服务", risk.cloudService));
             if (!ABUSEIPDB_KEY) {
               lines.push("Abuse置信分：未启用");
@@ -3300,6 +3514,7 @@ function fetchAll() {
             } else if (abuseData && abuseData.data) {
               lines.push("Abuse置信分：" + (abuseData.data.abuseConfidenceScore || 0));
               lines.push("滥用报告数：" + (abuseData.data.totalReports || 0));
+              lines.push("不同举报者数：" + (abuseData.data.numDistinctUsers || 0) + "（不是IP使用人数）");
               lines.push("信誉缓存：" + (abuseFromCache ? "命中" : "实时"));
             } else {
               lines.push("Abuse置信分：请求失败");
@@ -3352,7 +3567,8 @@ function fetchAll() {
               writeLineLearningModel(
                 getLineLearningKey(ipApi, cz88Data || {}),
                 risk.networkCategory,
-                risk.score
+                risk.score,
+                ipApi.query
               );
             } catch (e) {}
 
@@ -3360,7 +3576,6 @@ function fetchAll() {
             done(finalMsg);
           });
         });
-      });
     }
   );
 }
