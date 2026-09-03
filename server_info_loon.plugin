@@ -1,6 +1,6 @@
-#!name=节点详情查询 Ultimate
-#!desc=完整详细版 / 无IPQS / 修正版
+#!name=节点详情查询 Ultimate 2.31
+#!desc=本地 AbuseIPDB Key / IP共享人数估算 / 原生性分析 / 缓存与并发优化
 #!author=danielwu2020
-
+#!homepage=https://github.com/danielwu2020/loon-plugin
 [Script]
-generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询 Ultimate, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, enable=true
+generic script-path=https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/server_info_loon.js, tag=节点详情查询 Ultimate 2.31, img-url=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/ipInfo.png, timeout=90, enable=true
