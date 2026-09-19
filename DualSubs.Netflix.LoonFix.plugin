@@ -1,21 +1,19 @@
-#!name = 🍿️ DualSubs: 🇳 Netflix (Loon 3.5.2 Fix)
-#!desc = Netflix 双语翻译字幕｜Loon 3.5.2 二进制响应兼容修正版
-#!author = @VirgilClyne / Loon binary-body compatibility patch
+#!name = 🍿️ DualSubs: 🇳 Netflix (Loon Fix v2)
+#!desc = Netflix 双语翻译字幕｜跳过过大的 OCA 响应，保留字幕文本翻译
+#!author = @VirgilClyne / compatibility patch
 #!homepage = https://dualsubs.github.io/guide/netflix
 #!system = iOS,iPadOS,macOS,tvOS
 #!system_version = 15
-#!loon_version = 3.5.2(996)
 
-# 说明：
-# 1. 基于 DualSubs Netflix 兼容模式的字幕响应规则。
-# 2. 针对 Loon 3.5.2 中 nflxvideo.net 返回 application/octet-stream 时，
-#    Body 被按 UTF-8 字符串读取而导致黑屏/转圈的问题，
-#    为 Response Script 增加 binary_body_mode=true。
-# 3. Netflix 兼容模式仅使用 Translate；默认由 DualSubs 使用 AUTO -> ZH + Google。
-# 4. 这是独立测试修正版，不冒充 DualSubs 官方发布文件。
+# Loon 3.5.2 测试修正版
+# 核心思路：
+# - 不使用 binary-body-mode，避免 DualSubs Translate 脚本拿到 Uint8Array 后无法按字幕文本处理。
+# - 使用旧版 http-response 语法的 max-size=65536，
+#   尝试跳过较大的 Netflix OCA 音视频分块，只处理较小的字幕响应。
+# - 关闭原版 DualSubs Netflix 后再启用本插件，避免重复匹配。
 
 [Script]
-response if ${url} ~= /^https?:\/\/(.+)\.oca\.nflxvideo\.net\/\?o=\d+&v=\d+&e=\d+&t=.+/i then script("https://github.com/DualSubs/Universal/releases/latest/download/Translate.response.bundle.js") with tag="🍿️ DualSubs.Netflix.Translate.Subtitles.response", requires_body=true, binary_body_mode=true
+http-response ^https?:\/\/(.+)\.oca\.nflxvideo\.net\/\?o=\d+&v=\d+&e=\d+&t=.+ script-path=https://github.com/DualSubs/Universal/releases/latest/download/Translate.response.bundle.js,requires-body=true,max-size=65536,tag=🍿️ DualSubs.Netflix.Translate.Subtitles.response
 
 [Mitm]
 hostname = %APPEND% *.nflxvideo.net
