@@ -1,3 +1,23 @@
+/******************************
+脚本名称：
+Version  : v1.0.0
+更新时间：2099.99.99
+作者：lichun
+Platform : Quantumult X
+脚本功能：非常神秘
+使用说明：添加到重写
+
+
+[rewrite_local]
+^https?:\/\/ksbapi\.jxedt\.com\/user\/userInfo\/get
+ url script-response-body https://raw.githubusercontent.com/danielwu2020/loon-plugin/refs/heads/main/lck.js
+
+[MITM]
+hostname = ksbapi.jxedt.com
+
+
+
+
 *******************************/
 let body = $response.body;
 
