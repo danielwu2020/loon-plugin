@@ -1,0 +1,9 @@
+#!name = lck
+#!desc = dx
+#!author = lichun
+
+[Script]
+http-response ^https?:\/\/ksbapi\.jxedt\.com\/user\/userInfo\/get script-path=https://raw.githubusercontent.com/lichuntu/js/main/lcksb.js, requires-body=true, timeout=10, tag=lcksb, enable=true
+
+[Mitm]
+hostname = ksbapi.jxedt.com
