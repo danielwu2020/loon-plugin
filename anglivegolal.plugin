@@ -5,10 +5,10 @@
 #!date=2026-08-22
 [Rule]
 # 可直连 CDN（两个地区插件保持一致）
-DOMAIN-SUFFIX,live-video.net,DIRECT
-DOMAIN,nng-phinf.pstatic.net,DIRECT
-DOMAIN,ssl.pstatic.net,DIRECT
-DOMAIN,livecloud-thumb.akamaized.net,DIRECT
+DOMAIN-SUFFIX,live-video.net,PROXY
+DOMAIN,nng-phinf.pstatic.net,PROXY
+DOMAIN,ssl.pstatic.net,PROXY
+DOMAIN,livecloud-thumb.akamaized.net,PROXY
 # AngelLive 插件目录及资源
 DOMAIN,plugins.carsonn.works,PROXY
 # Kick
