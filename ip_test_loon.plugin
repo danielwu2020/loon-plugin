@@ -1,0 +1,10 @@
+#!name = 节点 IP 风险检测 (Loon)
+#!desc = 长按节点检测出口 IP 类型与六家平台的风险评分。原作者 Roddy-D；RavelloH Quantumult X 版；Loon 适配。
+#!author = Roddy-D / RavelloH / Loon 适配
+#!homepage = https://gist.github.com/RavelloH/d4152389cd810a402b641a625ce83857
+#!tag = 节点检测,IP纯净度,网络工具
+#!system = iOS,iPadOS,macOS
+#!loon_version = 3.5.1(983)
+
+[Script]
+generic then script("https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/ip_test_loon.js") with tag="节点IP风险检测", img_url="shield.checkerboard.system", timeout=65
