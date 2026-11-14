@@ -1,0 +1,7 @@
+#!name = 节点阻断检测 (Loon)
+#!desc = 长按节点检测代理、直连、远端 TCP 及疑似阻断时的国内运营商可达性。原作 RavelloH；Loon 移植版。
+#!author = RavelloH (原作) / Loon 移植
+#!tag = 节点检测,网络诊断
+
+[Script]
+generic then script("https://raw.githubusercontent.com/danielwu2020/loon-plugin/main/block_check_loon.js") with tag="节点阻断检测", img_url="bolt.horizontal.icloud.fill.system", timeout=45
