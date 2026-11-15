@@ -1,8 +1,4 @@
-#!name=Apple Intelligence
-#!desc=Apple 智能（Siri、私有云计算、Apple Intelligence）分流规则，含 Private Relay 中继域名，不含 App Store 下载域名
-#!author=zhaohantao1360-hash
-#!date=2026-11-14
-
+#Apple Intelligence
 DOMAIN,guzzoni.apple.com
 DOMAIN-SUFFIX,smoot.apple.com
 DOMAIN,api-siri-prod.apple.com
