@@ -1,20 +1,20 @@
-#!name=Fcmobile规则
-#!desc=fcmobile分流规则
-#!author=dx
-#!homepage=https://www.ea.com/zh-hans/games/ea-sports-fc/fc-mobile
-#!date=2026-08-22
-[Rule]
-# FC Mobile 登录、账号、活动和游戏接口
-DOMAIN-SUFFIX,ea.com,PROXY
-DOMAIN-SUFFIX,easports.com,PROXY
-DOMAIN-SUFFIX,eamobile.com,PROXY
-DOMAIN-SUFFIX,electronicarts.com,PROXY
-DOMAIN-SUFFIX,tnt-ea.com,PROXY
+# EA SPORTS FC Mobile 国际服
+# ==========================================
 
-# 游戏资源与更新
-DOMAIN-SUFFIX,eaassets-a.akamaihd.net,PROXY
-DOMAIN-SUFFIX,origin-a.akamaihd.net,PROXY
-DOMAIN-SUFFIX,origin.com,PROXY
+# ==========================================
+# FC Mobile 实测规则
+# ==========================================
 
-# 实时对战兜底：处理服务器直接下发 IP 的 UDP/STUN/QUIC 连接
-AND,((OR,((PROTOCOL,UDP),(PROTOCOL,STUN),(PROTOCOL,QUIC))),(NOT,((DEST-PORT,53)))),PROXY
+# FC Mobile 实时比赛数据——实测 UDP 23000
+
+AND,((PROTOCOL,UDP),(DEST-PORT,23000-23007)),游戏
+
+# EA / FC Mobile 服务
+DOMAIN,eafcmassets.akamaized.net,游戏
+DOMAIN-SUFFIX,easfc.ea.com,游戏
+DOMAIN-SUFFIX,eamobile.com,游戏
+DOMAIN-SUFFIX,easports.com,游戏
+DOMAIN-SUFFIX,tnt-ea.com,游戏
+DOMAIN-SUFFIX,ea.com,游戏
+DOMAIN-SUFFIX,electronicarts.com,游戏
+
