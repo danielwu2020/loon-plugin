@@ -1,8 +1,10 @@
 # Muse
-DOMAIN-SUFFIX,meta.com
-DOMAIN-SUFFIX,cdninstagram.com
-DOMAIN-SUFFIX,fbcdn.net
-DOMAIN-SUFFIX,facebook.com
-DOMAIN-SUFFIX,muse.ai
-DOMAIN-SUFFIX,meta.ai
-DOMAIN-SUFFIX,metaaivm.com
+DOMAIN-SUFFIX,meta.com,proxy
+DOMAIN-SUFFIX,cdninstagram.com,proxy
+DOMAIN-SUFFIX,fbcdn.net,proxy
+DOMAIN-SUFFIX,facebook.com,proxy
+DOMAIN-SUFFIX,muse.ai,proxy
+DOMAIN-SUFFIX,meta.ai,proxy
+DOMAIN-SUFFIX,metaaivm.com,proxy
+DOMAIN-SUFFIX,museai.com,proxy
+DOMAIN-SUFFIX,ecto1.ai,proxy
