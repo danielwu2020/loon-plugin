@@ -1,10 +1,12 @@
-# Muse
-DOMAIN-SUFFIX,meta.com,proxy
-DOMAIN-SUFFIX,cdninstagram.com,proxy
-DOMAIN-SUFFIX,fbcdn.net,proxy
-DOMAIN-SUFFIX,facebook.com,proxy
-DOMAIN-SUFFIX,muse.ai,proxy
-DOMAIN-SUFFIX,meta.ai,proxy
-DOMAIN-SUFFIX,metaaivm.com,proxy
-DOMAIN-SUFFIX,museai.com,proxy
-DOMAIN-SUFFIX,ecto1.ai,proxy
+# NAME: Meta Muse
+DOMAIN-SUFFIX,muse.ai
+DOMAIN-SUFFIX,meta.ai
+DOMAIN-SUFFIX,meta.com
+DOMAIN-SUFFIX,metaaivm.com
+DOMAIN-SUFFIX,metaaiusercontent.com
+DOMAIN-SUFFIX,facebook.com
+DOMAIN-SUFFIX,atmeta.com
+DOMAIN-SUFFIX,llama.com
+DOMAIN-SUFFIX,ecto1.ai
+DOMAIN-SUFFIX,museai.com
+DOMAIN-SUFFIX,fbcdn.net
