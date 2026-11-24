@@ -1,12 +1,16 @@
-# NAME: Meta Muse
-DOMAIN-SUFFIX,muse.ai
-DOMAIN-SUFFIX,meta.ai
-DOMAIN-SUFFIX,meta.com
-DOMAIN-SUFFIX,metaaivm.com
-DOMAIN-SUFFIX,metaaiusercontent.com
-DOMAIN-SUFFIX,facebook.com
-DOMAIN-SUFFIX,atmeta.com
-DOMAIN-SUFFIX,llama.com
-DOMAIN-SUFFIX,ecto1.ai
-DOMAIN-SUFFIX,museai.com
-DOMAIN-SUFFIX,fbcdn.net
+# Meta Muse
+DOMAIN-SUFFIX,muse.ai,Muse
+DOMAIN-SUFFIX,meta.ai,Muse
+DOMAIN-SUFFIX,meta.com,Muse
+DOMAIN-SUFFIX,metaaivm.com,Muse
+DOMAIN-SUFFIX,metaaiusercontent.com,Muse
+DOMAIN-SUFFIX,facebook.com,Muse
+DOMAIN-SUFFIX,atmeta.com,Muse
+DOMAIN-SUFFIX,llama.com,Muse
+DOMAIN-SUFFIX,ecto1.ai,Muse
+DOMAIN-SUFFIX,museai.com,Muse
+DOMAIN-SUFFIX,fbcdn.net,Muse
+DOMAIN-SUFFIX,cdninstagram.com,Muse
+DOMAIN-SUFFIX,ecto1usercontent.com,Muse
+DOMAIN-SUFFIX,meta-agents-apps.workers.dev,Muse
+DOMAIN,fbcdn-a.akamaihd.net,Muse
